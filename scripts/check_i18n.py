@@ -23,7 +23,7 @@ EXEMPTIONS = {
     'health_by/web/js/i18n-messages.js': 'Generated catalog; verified against canonical JSON.',
 }
 # Proper names, standard units and identifiers are language-invariant.
-INVARIANT_TEXT = {'health·by', 'Health By', 'HRV', 'SpO₂', 'ms', 'bpm', 'kg', '°C', '%', '中文', 'English'}
+INVARIANT_TEXT = {'Health By', 'HRV', 'SpO₂', 'ms', 'bpm', 'kg', '°C', '%', '中文', 'English'}
 
 
 def python_issues(source, file):

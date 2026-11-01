@@ -1,4 +1,4 @@
-# health·by
+# Health By
 
 **A self-hosted dashboard for your own health data.** Sync from Google Health / Fitbit to your own
 machine, keep it long-term, and read it through statistics you can check yourself. No black-box
@@ -75,7 +75,7 @@ database — switch to the new variable after confirming your first deployment.
 A third party cannot talk to the band over Bluetooth; this is the only official path:
 
 ```
-Fitbit device → Bluetooth → Fitbit/Google app → cloud sync → Google Health API v4 → health·by
+Fitbit device → Bluetooth → Fitbit/Google app → cloud sync → Google Health API v4 → Health By
 ```
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/) and enable
