@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="web.settings.text.d1e075354">Health By · 设置</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <header class="masthead masthead-slim">
+    <div class="masthead-row">
+      <div class="brand"><a href="/">health<span>·by</span></a></div>
+      <label class="language-picker"><span data-i18n="language.label">Language</span><select data-language-select aria-label="Language"><option value="zh">中文</option><option value="en">English</option></select></label>
+      <a class="btn btn-sm" href="/"><span data-i18n="web.settings.text.679f2a6cb">← 返回看板</span></a>
+    </div>
+    <div class="rule-double" role="presentation"></div>
+  </header>
+
+  <main class="page page-narrow">
+    <h1 class="page-title"><span data-i18n="web.settings.text.df3d58c7d">设置</span></h1>
+    <div id="oauth-banner" class="banner" hidden></div>
+
+    <section class="card">
+      <h2><span data-i18n="web.settings.text.186be2232">数据源</span></h2>
+      <p class="muted small"><span data-i18n="web.settings.text.197866c98">演示模式开箱即用；接入真实数据需要你自己的 Google Cloud 项目（下方「连接 Google Health」）。</span></p>
+      <div class="radio-row" id="provider-row">
+        <label class="radio"><input type="radio" name="provider" value="demo"> <span data-i18n="web.settings.text.2debd94cb">演示数据（本机生成，不联网）</span></label>
+        <label class="radio"><input type="radio" name="provider" value="google-health"> <span data-i18n="web.settings.text.614261cb2">Google Health（真实数据，需授权）</span></label>
+      </div>
+      <div class="row">
+        <button id="save-provider" class="btn btn-primary"><span data-i18n="web.settings.text.beec7877a">保存数据源</span></button>
+        <button id="seed-demo" class="btn"><span data-i18n="web.settings.text.2cc71bd17">重新生成演示数据（30 天）</span></button>
+      </div>
+      <p id="demo-note" class="muted small" hidden></p>
+    </section>
+
+    <section class="card">
+      <h2><span data-i18n="web.settings.text.c7777dda2">连接 Google Health</span></h2>
+      <div class="status-row" id="gh-status"></div>
+      <div class="form-grid">
+        <label>
+          OAuth Client ID
+          <input type="text" id="gh-client-id" placeholder="xxxxxxxx.apps.googleusercontent.com" autocomplete="off">
+        </label>
+        <label>
+          OAuth Client Secret
+          <input type="password" id="gh-client-secret" placeholder="加密存储" autocomplete="new-password" data-i18n-placeholder="web.settings.placeholder.4430a3caf">
+        </label>
+        <label>
+          <span data-i18n="web.settings.text.480ed7ca5">回调地址（与 Google Cloud 控制台登记的一致）</span>
+          <input type="text" id="gh-redirect-uri" autocomplete="off">
+        </label>
+      </div>
+      <div class="row">
+        <button id="save-credentials" class="btn btn-primary"><span data-i18n="web.settings.text.47c61ce5c">保存凭据</span></button>
+        <button id="connect-gh" class="btn"><span data-i18n="web.settings.text.912f4fb33">连接（跳转到 Google 授权）</span></button>
+        <button id="disconnect-gh" class="btn btn-danger"><span data-i18n="web.settings.text.5de9b6543">断开并删除凭据</span></button>
+      </div>
+      <details class="hint">
+        <summary><span data-i18n="web.settings.text.ea24c5df6">拿到数据的完整步骤（约 5 分钟）</span></summary>
+        <ol>
+          <li><span data-i18n="web.settings.text.12404a0b6">在</span> <code>console.cloud.google.com</code> <span data-i18n="web.settings.text.f387d4d10">新建项目，搜索并启用「Google Health API」。</span></li>
+          <li><span data-i18n="web.settings.text.6bf10d650">配置 OAuth 同意屏幕（External），把你自己添加为测试用户。</span></li>
+          <li><span data-i18n="web.settings.text.41c246734">创建「Web 应用」类型的 OAuth 客户端，回调地址填上面的回调地址（原样复制）。</span></li>
+          <li><span data-i18n="web.settings.text.cd7c11006">把 Client ID / Secret 填入本页并保存，然后点「连接」。</span></li>
+        </ol>
+        <p class="muted small"><span data-i18n="web.settings.text.404a3ac64">注意：Google 测试模式下的 refresh token 每 7 天过期，过期后本页会提示「需要重新连接」，点一次「连接」即可，无需重新配置。</span></p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2><span data-i18n="web.settings.text.970386ee7">个人目标</span></h2>
+      <div class="form-grid form-grid-2">
+        <label><span data-i18n="web.settings.text.065cbd7d1">步数目标</span> <input type="number" id="goal-steps" min="1" step="500"></label>
+        <label><span data-i18n="web.settings.text.33d67ae27">睡眠目标（分钟）</span>
+          <input type="number" id="goal-sleep" min="60" step="15">
+          <span class="field-hint">= <span id="goal-sleep-hours"><span data-i18n="web.settings.text.08666137d">8 小时 0 分钟</span></span></span>
+        </label>
+      </div>
+      <div class="row"><button id="save-goals" class="btn btn-primary"><span data-i18n="web.settings.text.6fc46974c">保存目标</span></button></div>
+    </section>
+
+    <section class="card" id="ai-settings">
+      <h2><span data-i18n="web.settings.text.0e18125db">AI 解读</span></h2>
+      <p class="muted small"><span data-i18n="web.settings.text.8a6cf768a">OpenAI 兼容协议，自带密钥。在日报点击「生成解读」会发送聚合指标和统计结论；「测试连接」只发送固定短消息，「获取模型」只请求模型列表。</span></p>
+      <label class="radio"><input type="checkbox" id="ai-enabled"> <span data-i18n="web.settings.text.579903350">启用手动 AI 解读</span></label>
+      <p id="ai-disclosure" class="muted small" aria-live="polite" hidden></p>
+      <div class="form-grid">
+        <label><span data-i18n="web.settings.text.94eab6c58">Base URL（含 /v1）</span>
+          <input type="url" id="ai-base-url" placeholder="http://127.0.0.1:11434/v1" autocomplete="off">
+        </label>
+        <label><span data-i18n="web.settings.text.cb2f1709f">模型名称</span>
+          <input type="text" id="ai-model" placeholder="qwen2.5:3b" autocomplete="off">
+        </label>
+        <label id="ai-model-picker" hidden><span data-i18n="web.settings.text.327bd579c">从已获取的模型中选择</span>
+          <select id="ai-model-list" aria-label="从已获取的模型中选择" hidden data-i18n-aria-label="web.settings.aria-label.327bd579c"></select>
+        </label>
+        <label><span data-i18n="web.settings.text.26315cada">API key（本地 Ollama 可留空）</span>
+          <input type="password" id="ai-key" autocomplete="new-password" placeholder="加密存储；留空保留已存密钥" data-i18n-placeholder="web.settings.placeholder.aeeac219b">
+        </label>
+      </div>
+      <div class="row">
+        <button id="ai-save" class="btn btn-primary"><span data-i18n="web.settings.text.59dbbf0b4">保存 AI 设置</span></button>
+        <button id="ai-models" class="btn"><span data-i18n="web.settings.text.83fcfb4c1">获取模型</span></button>
+        <button id="ai-test" class="btn"><span data-i18n="web.settings.text.0a98a48ea">测试连接</span></button>
+        <button id="ai-clear-key" class="btn"><span data-i18n="web.settings.text.71711dbbd">删除已存 AI 密钥</span></button>
+      </div>
+      <p class="muted small" id="ai-settings-note" aria-live="polite"></p>
+      <p class="muted small" id="ai-models-note" role="status"><span data-i18n="web.settings.text.0b2051ff8">保存地址与密钥后可获取模型；始终可以手动填写模型名。</span></p>
+      <p class="muted small ai-test-result" id="ai-test-result" role="status" aria-live="polite"><span data-i18n="web.settings.text.20de0829b">测试使用已保存的配置，只发送固定短消息，不含健康数据。</span></p>
+    </section>
+
+    <section class="card">
+      <h2><span data-i18n="web.settings.text.dcfe516d1">同步</span></h2>
+      <div class="form-grid form-grid-2">
+        <label><span data-i18n="web.settings.text.f5db2c364">自动同步间隔</span>
+          <select id="sync-interval">
+            <option value="0" data-i18n="web.settings.text.05a3236e4">关闭（只手动同步）</option>
+            <option value="60" data-i18n="web.settings.text.adf263eca">每小时</option>
+            <option value="360" data-i18n="web.settings.text.ed59c7c06">每 6 小时</option>
+            <option value="720" data-i18n="web.settings.text.06921f0aa">每 12 小时</option>
+            <option value="1440" data-i18n="web.settings.text.eea1694c2">每天</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <button id="save-sync" class="btn btn-primary"><span data-i18n="web.settings.text.91a92469f">保存同步设置</span></button>
+        <button id="sync-now" class="btn"><span data-i18n="web.settings.text.f7a6d065e">立即同步（昨天 + 今天）</span></button>
+      </div>
+      <p id="sync-note" class="muted small" aria-live="polite"></p>
+      <div id="sync-runs"></div>
+    </section>
+
+    <section class="card">
+      <h2><span data-i18n="web.settings.text.5440f7424">数据</span></h2>
+      <div class="row">
+        <a id="export-link" class="btn" href="/api/v1/export"><span data-i18n="web.settings.text.3d94aa5b3">导出全部数据（JSON）</span></a>
+      </div>
+      <div class="row danger-zone">
+        <input type="text" id="clear-confirm" placeholder="要清空数据请原文输入：DELETE ALL DATA" data-i18n-placeholder="web.settings.placeholder.127466aca">
+        <button id="clear-data" class="btn btn-danger"><span data-i18n="web.settings.text.a8aeb5cce">清空全部健康数据</span></button>
+      </div>
+      <p class="muted small"><span data-i18n="web.settings.text.efa2d1f5c">清空只删除健康数据（天的记录 / 原始存档），保留连接凭据与设置。</span></p>
+    </section>
+
+    <p class="disclaimer" id="about"></p>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="/static/js/settings.js"></script>
+</body>
+</html>

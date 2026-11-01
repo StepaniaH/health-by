@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title data-i18n="web.index.text.f7ba58c59">Health By · 健康日报</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div id="load-bar" class="load-bar" role="status" aria-label="正在加载当天数据" hidden data-i18n-aria-label="web.index.aria-label.74f2d9fde"></div>
+  <header class="masthead">
+    <div class="masthead-row">
+      <div class="brand"><a href="/">health<span>·by</span></a></div>
+      <div class="masthead-actions">
+        <label class="language-picker"><span data-i18n="language.label">Language</span>
+          <select data-language-select aria-label="Language"><option value="zh">中文</option><option value="en">English</option></select>
+        </label>
+        <span id="sync-note" class="meta-note" aria-live="polite"></span>
+        <button id="sync-btn" class="btn btn-primary btn-sm"><span data-i18n="web.index.text.dcfe516d1">同步</span></button>
+        <button id="batch-btn" class="link-btn"><span data-i18n="web.index.text.cb7707463">批量</span></button>
+        <a class="link-btn" href="/settings"><span data-i18n="web.index.text.df3d58c7d">设置</span></a>
+      </div>
+    </div>
+    <div class="masthead-date-row">
+      <button id="date-prev" class="arrow" aria-label="前一天" data-i18n-aria-label="web.index.aria-label.8b0f9494e">←</button>
+      <h1 id="date-label" class="date-title"><span data-i18n="web.index.text.4927a53bc">加载中…</span></h1>
+      <button id="date-next" class="arrow" aria-label="后一天" data-i18n-aria-label="web.index.aria-label.af19ac0d4">→</button>
+      <div class="date-tools">
+        <label class="link-btn pick" title="选择日期" data-i18n-title="web.index.title.680c78ec6"><span data-i18n="web.index.text.680c78ec6">选择日期</span>
+          <input type="date" id="date-picker" aria-label="选择日期" data-i18n-aria-label="web.index.aria-label.680c78ec6">
+        </label>
+        <button id="date-today" class="link-btn"><span data-i18n="web.index.text.c4aa445b5">回到今天</span></button>
+      </div>
+    </div>
+    <p id="masthead-meta" class="masthead-meta"></p>
+  </header>
+
+  <nav id="section-nav" class="section-nav" aria-label="页面分区" data-i18n-aria-label="web.index.aria-label.1bfc30682">
+    <a href="#card-today"><span data-i18n="web.index.text.d5f5a7a01">今天</span></a>
+    <a href="#card-ai"><span data-i18n="web.index.text.0e18125db">AI 解读</span></a>
+    <a href="#card-sleep"><span data-i18n="web.index.text.01324e540">睡眠</span></a>
+    <a href="#card-activity"><span data-i18n="web.index.text.9e9bead81">活动</span></a>
+    <a href="#card-heart"><span data-i18n="web.index.text.015564cd0">心血管</span></a>
+    <a href="#card-body"><span data-i18n="web.index.text.35b081b16">身体与训练</span></a>
+    <a href="#card-data"><span data-i18n="web.index.text.5440f7424">数据</span></a>
+  </nav>
+
+  <main class="page">
+    <p id="today-summary" class="today-summary"></p>
+    <p id="today-criteria" class="today-criteria"></p>
+
+    <section id="card-today" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">01</span>
+        <h2><span data-i18n="web.index.text.d5f5a7a01">今天</span></h2>
+      </div>
+      <div id="today-rows" class="today-rows"></div>
+    </section>
+
+    <section id="card-ai" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">02</span>
+        <h2><span data-i18n="web.index.text.0e18125db">AI 解读</span></h2>
+      </div>
+      <div class="ai-window-controls">
+        <label><span data-i18n="web.index.text.762301e01">分析窗口</span>
+          <select id="ai-window-preset">
+            <option value="1" data-i18n="web.index.text.80be27ffe">所选单日</option><option value="7" data-i18n="web.index.text.2261b0671">近 7 天</option>
+            <option value="30" data-i18n="web.index.text.f729bb3d3">近 30 天</option><option value="90" data-i18n="web.index.text.0909522d9">近 90 天</option>
+            <option value="custom" data-i18n="web.index.text.3cfb56c76">自定义区间</option>
+          </select>
+        </label>
+        <label><span data-i18n="web.index.text.760506491">开始日期</span><input id="ai-window-start" type="date"></label>
+        <label><span data-i18n="web.index.text.895cd52fb">结束日期</span><input id="ai-window-end" type="date"></label>
+        <button id="ai-window-apply" class="btn"><span data-i18n="web.index.text.ba33d3ceb">应用区间</span></button>
+      </div>
+      <p id="ai-window-note" class="muted small" role="status"></p>
+      <div class="ai-toolbar">
+        <button id="ai-generate" class="btn btn-primary" disabled><span data-i18n="web.index.text.b932e2eca">生成解读</span></button>
+        <a class="link-btn" href="/settings#ai-settings"><span data-i18n="web.index.text.e3ce49ba8">AI 设置</span></a>
+      </div>
+      <p id="ai-boundary" class="muted small"></p>
+      <p id="ai-status" class="muted small" role="status" aria-live="polite"></p>
+      <p id="ai-error" class="ai-error" role="alert" hidden></p>
+      <div id="ai-validation" class="ai-validation" role="status" hidden></div>
+      <div id="ai-output" class="ai-output" aria-live="polite"></div>
+      <p id="ai-meta" class="ai-meta"></p>
+    </section>
+
+    <section id="card-sleep" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">03</span>
+        <h2><span data-i18n="web.index.text.01324e540">睡眠</span></h2>
+        <span class="block-note" id="sleep-note"></span>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.59ae28caf">昨晚</span></span>
+          <span class="chart-note" id="sleep-night-note"></span>
+        </div>
+        <div id="sleep-body"></div>
+        <div id="sleep-signals"></div>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.9b59e637c">趋势</span></span>
+          <span class="chart-note" id="sleep-trend-note"></span>
+        </div>
+        <div id="sleep-trend-body"></div>
+        <div id="sleep-achievements"></div>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.43e4020c3">作息规律</span></span>
+        </div>
+        <div id="sleep-rhythm-body"></div>
+      </div>
+
+      <details class="block-details" id="sleep-detail">
+        <summary>
+          <span class="summary-title"><span data-i18n="web.index.text.93e1e1e83">当晚明细</span></span>
+          <span class="summary-meta" id="sleep-detail-note"></span>
+        </summary>
+        <div class="detail-body" id="sleep-detail-body"></div>
+      </details>
+
+      <p class="pointer" id="sleep-pointer" hidden></p>
+    </section>
+
+    <section id="card-activity" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">04</span>
+        <h2><span data-i18n="web.index.text.9e9bead81">活动</span></h2>
+        <span class="block-note" id="activity-note"></span>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.d5f5a7a01">今天</span></span>
+        </div>
+        <div id="activity-body"></div>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.9b59e637c">趋势</span></span>
+          <span class="chart-note" id="activity-trend-note"></span>
+        </div>
+        <div id="activity-trend-body"></div>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.b6b2024fa">规律</span></span>
+        </div>
+        <div id="activity-rhythm-lines" class="rhythm-lines"></div>
+        <div id="cosinor-body"></div>
+      </div>
+
+      <details class="block-details" id="activity-detail">
+        <summary>
+          <span class="summary-title"><span data-i18n="web.index.text.c0c3820ae">当日明细</span></span>
+          <span class="summary-meta" id="activity-detail-note"></span>
+        </summary>
+        <div class="detail-body">
+          <div id="activity-detail-body"></div>
+          <div id="activity-weekday"></div>
+        </div>
+      </details>
+
+      <p class="pointer" id="activity-pointer" hidden></p>
+    </section>
+
+    <section id="card-heart" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">05</span>
+        <h2><span data-i18n="web.index.text.015564cd0">心血管</span></h2>
+        <span class="block-note" id="heart-note"></span>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.d5f5a7a01">今天</span></span>
+        </div>
+        <div id="heart-today-body"></div>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.9b59e637c">趋势</span></span>
+        </div>
+        <div id="heart-trend-body"></div>
+      </div>
+
+      <details class="block-details" id="heart-detail">
+        <summary>
+          <span class="summary-title"><span data-i18n="web.index.text.270a58f6f">夜间信号与当日心率</span></span>
+          <span class="summary-meta" id="heart-detail-note"></span>
+        </summary>
+        <div class="detail-body">
+          <div id="nightly-body"></div>
+          <div class="chart-head">
+            <span class="chart-title"><span data-i18n="web.index.text.ef0d62e7b">当日心率曲线</span></span>
+            <span class="chart-note" id="day-hr-note"></span>
+          </div>
+          <div id="day-hr-body"></div>
+        </div>
+      </details>
+
+      <div id="heart-relations"></div>
+    </section>
+
+    <section id="card-body" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">06</span>
+        <h2><span data-i18n="web.index.text.35b081b16">身体与训练</span></h2>
+        <span class="block-note" id="body-note"></span>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.d5f5a7a01">今天</span></span>
+        </div>
+        <div id="body-today"></div>
+      </div>
+
+      <div class="figure-block" id="body-trend-block">
+        <div class="chart-head">
+          <span class="chart-title"><span data-i18n="web.index.text.9b59e637c">趋势</span></span>
+        </div>
+        <div id="body-trend"></div>
+      </div>
+
+      <details class="block-details" id="body-detail">
+        <summary>
+          <span class="summary-title"><span data-i18n="web.index.text.a52f40734">记录与训练</span></span>
+          <span class="summary-meta" id="workouts-note"></span>
+        </summary>
+        <div class="detail-body">
+          <div id="body-body"></div>
+          <div id="workouts-body"></div>
+        </div>
+      </details>
+    </section>
+
+    <section id="card-data" class="block" hidden>
+      <div class="block-head">
+        <span class="block-index">07</span>
+        <h2><span data-i18n="web.index.text.5440f7424">数据</span></h2>
+        <span class="block-note" id="data-note-label"></span>
+      </div>
+      <div class="figure-block">
+        <div class="chart-head"><span class="chart-title"><span data-i18n="web.index.text.4780fa78f">当天时间轴</span></span><span class="chart-note" id="timeline-note"></span></div>
+        <div id="timeline-body"></div>
+      </div>
+      <div class="figure-block">
+        <div class="chart-head"><span class="chart-title"><span data-i18n="web.index.text.b069cc1ec">周汇总</span></span><span class="chart-note" id="weekly-note"></span></div>
+        <div id="weekly-table"></div>
+      </div>
+
+      <div class="figure-block">
+        <div class="chart-head"><span class="chart-title"><span data-i18n="web.index.text.d320e85de">覆盖度</span></span><span class="chart-note" id="coverage-note"></span></div>
+        <div id="coverage-body"></div>
+      </div>
+    </section>
+
+    <p id="data-note" class="page-note" hidden></p>
+
+    <section id="empty-state" class="empty" hidden>
+      <h2><span data-i18n="web.index.text.0103b95be">这一天还没有数据</span></h2>
+      <p id="empty-hint" class="muted"></p>
+      <div class="empty-actions">
+        <button id="empty-sync" class="btn"><span data-i18n="web.index.text.d9424dd98">同步这一天</span></button>
+        <a class="btn" href="/settings"><span data-i18n="web.index.text.93112c231">去设置</span></a>
+      </div>
+    </section>
+
+    <footer class="colophon">
+      <span id="colophon-left">Health By</span>
+      <span class="colophon-note"><span data-i18n="web.index.text.eda055a5e">本地存档计算 · 分析窗口</span> <span id="colophon-window">90</span> <span data-i18n="web.index.text.49da61cee">天</span></span>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="batch-dialog" class="batch-dialog">
+    <form id="batch-form">
+      <h3><span data-i18n="web.index.text.6f957b4d8">批量同步</span></h3>
+      <label><span data-i18n="web.index.text.760506491">开始日期</span><input type="date" id="batch-start" required></label>
+      <label><span data-i18n="web.index.text.895cd52fb">结束日期</span><input type="date" id="batch-end" required></label>
+      <p class="muted" id="batch-hint"><span data-i18n="web.index.text.61fc8688b">一次最多 90 天，按队列并发执行。</span></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="batch-cancel"><span data-i18n="web.index.text.2cd0f3be8">取消</span></button>
+        <button type="submit" class="btn"><span data-i18n="web.index.text.8dabf1df8">开始同步</span></button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/static/js/dashboard.js"></script>
+</body>
+</html>
