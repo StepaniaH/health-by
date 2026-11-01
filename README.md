@@ -160,6 +160,8 @@ To reproduce: start without credentials and the page shows a "Demo data" badge.
 
 ## Documentation
 
+Chinese translations: [docs/zh/](docs/zh/).
+
 | File | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | System design and module boundaries |

@@ -1,338 +1,336 @@
-# 指标定义与出处
+# Metric definitions and sources
 
-> **这一页解决什么。** 看板上的每个数字，都能在这里查到：**怎么算的、参数是什么、来自哪篇文献、
-> 以及它在什么情况下不该被相信。**
->
-> README 的「分析口径」表是速查版；这一页是可核对版。**两处不一致时以本页为准**，
-> 并且请把 README 也改过来。
->
-> 所有常量都在代码里是具名常量（`health_by/insights.py`、`health_by/metrics.py` 顶部），
-> 本文引用的数值与代码一一对应。
+[Chinese](zh/methods.md)
 
----
+Every number on the dashboard can be traced here: how it is computed, which parameters it uses,
+which publication it comes from, and when it should not be trusted.
 
-## 一、先说三条全局约定
+The README's analysis table is the short version. This page is the checkable one. Where the two
+disagree, this page wins.
 
-这三条决定了下面每个指标的解读边界，先立在这里。
-
-### 1. 窗口按**日历**对齐，不按"有数据的行数"
-
-日数据只存有记录的日期（`storage.get_day_window` 不补空行），所以序列里相邻两行可能差好几天。
-所有窗口计算（基线、滚动带、ACWR）都按**日历日**开窗，缺测日填 `None` 参与位置对齐，
-而不是拿"最近 N 行"当"最近 N 天"。
-
-### 2. 报告数字时必须带口径
-
-同一个库、同一个指标，换一种数法就能得出不同的数，而且**每个都可能是对的**。
-本项目已经踩过：`insights` 里数基表还是数表+视图，差了 4 个视图；
-compose 文件数 35 还是 36，差在一个模板文件。
-
-所以只要一个数可能被第二个人复算，就把**查询语句或判定条件**一起写出来。
-
-### 3. 单点读数不构成结论
-
-单日的 HRV、静息心率、血氧、呼吸率波动，其夜间噪声常常大于任何"有意义变化"的阈值。
-因此这些指标的**单日值只做描述**（"当前 45 ms，比近期均值 −2 ms"），
-不带"达标/偏低"这类判定词。判定只在多日趋势上做，并且必须说明用的是哪个基线窗口。
+All constants are named in the code (`health_by/insights.py`, `health_by/metrics.py`); the values
+quoted here map one-to-one onto them.
 
 ---
 
-## 二、睡眠
+## 1. Three global conventions
 
-### 2.1 睡眠时长与睡眠缺口
+### 1.1 Windows follow the calendar, not the row count
+
+Day records exist only for dates that have data (`storage.get_day_window` does not pad gaps), so two
+adjacent rows can be days apart. Every window calculation (baseline, rolling band, ACWR) opens on
+**calendar days**, with missing days carried as `None` for alignment — never by taking "the last N
+rows" as "the last N days".
+
+### 1.2 A reported number carries its definition
+
+The same metric over the same database can be counted several ways, each defensible. Whenever a
+number could be recomputed by someone else, publish the query or the condition alongside it.
+
+### 1.3 A single reading is not a conclusion
+
+Night-to-night noise in HRV, resting heart rate, blood oxygen, and breathing rate routinely exceeds
+any threshold for a meaningful change. Their **single-day values are descriptive only** ("currently
+45 ms, −2 ms against the recent mean") and carry no on-target / low verdict. Verdicts apply to
+multi-day trends only, and must name the baseline window they used.
+
+---
+
+## 2. Sleep
+
+### 2.1 Sleep duration and sleep debt
 
 | | |
 |---|---|
-| **定义** | 缺口 = Σ max(0, 目标 − 当晚时长)，只统计**有睡眠记录**的夜晚 |
-| **参数** | 窗口 7 天（`SHORT_WINDOW_DAYS`）；目标取用户设置，默认 480 分钟 |
-| **出处** | 常规做法，无特定文献；目标是用户自己的设定而非群体推荐值 |
-| **实现** | `metrics.sleep_debt()` |
+| Definition | debt = Σ max(0, goal − that night's duration), counting **recorded nights only** |
+| Parameters | 7-day window (`SHORT_WINDOW_DAYS`); goal from user settings, default 480 minutes |
+| Source | conventional; the goal is the user's own setting, not a population recommendation |
+| Implementation | `metrics.sleep_debt()` |
 
-**已知局限：** 缺口是**下界**。缺记录的夜晚按"没有缺口"计，所以真实缺口只会更大、不会更小。
-报告里必须同时给出"N 晚有记录"，否则读者会以为缺口是完整的。
+**Known limitation:** the debt is a **lower bound**. Nights with no record count as no debt, so the
+true figure can only be larger. A report must state "N nights recorded" alongside it, or the reader
+will take the debt as complete.
 
-### 2.1.1 个人基线：全站唯一定义
+### 2.2 Baseline: the only definition in the product
 
-**页面上一旦出现两个「基线」，用户看到的两句结论就会互相冒充**——一处说"比基线高 X"，
-另一处说"偏离基线"，却无法知道是不是同一个基线。所以窗口、中心量、最小样本数只在
-`metrics.baseline_stats()` 里定义一次，`insights.py` 与 `analysis.py` 都引用它。
+Two different "baselines" on one screen make two conclusions impersonate each other. Window, centre,
+and minimum sample size are therefore defined once, in `metrics.baseline_stats()`, and both
+`insights.py` and `analysis.py` reference it.
 
-| 参数 | 取值 | 说明 |
+| Parameter | Value | Notes |
 |---|---|---|
-| 窗口 | **28 天**（按日历） | 7 天均值的日间噪声大，容易得出"今天 HRV 偏低"这种站不住的结论 |
-| 中心量 | **中位数** | 比均值抗离群——一次通宵、一次发烧不该把基线拖走 |
-| 最小样本 | **7** | 少于 7 个点算出的标准差极不稳定，拿它的 0.5 倍当 SWC 会误导 |
+| Window | **28 days** (calendar) | A 7-day average is too noisy for day-level verdicts |
+| Centre | **median** | robust to outliers; one late night should not move the baseline |
+| Minimum samples | **7** | a standard deviation from fewer than 7 points is too unstable for an SWC band |
 
-**一个必须记住的调用约定：`offset_days`**
+**Calling convention: `offset_days`**
 
 ```
-调用方传入的序列【包含当天】  → offset_days = 1   （insights）
-调用方传入的序列【已排除当天】 → offset_days = 0   （analysis）
+caller passes a series that INCLUDES the day     → offset_days = 1   (insights)
+caller passes a series that EXCLUDES the day     → offset_days = 0   (analysis)
 ```
 
-传错不会报错，只会**白丢一天或少排除一天**，得到一个"看起来合理但偏了"的基线。
-`test_baseline_is_identical_across_analysis_and_insights` 就是防这个的：两个模块在同一份数据上
-必须算出同一个数，且该测试由不掌握实现的一侧编写。
+Getting this wrong produces no error — just a baseline that is one day off, and looks plausible.
+`test_baseline_is_identical_across_analysis_and_insights` pins it: both modules must produce the same
+number from the same data.
 
-> **行为变化（2026-10-30）：** 统一前 `analysis.py` 用 7 天均值、**没有最小样本下限**，
-> 历史里只有 2 天也会报"基线"。统一后不足 7 天不再给基线，界面必须说清是**样本不足**
-> 而不是坏了（页面会说明「本次样本不足，无法建立基线」）。这个变化是对的：2 个点算出来的基线就是噪音。
+Below the minimum sample count no baseline is published. The interface must say **not enough samples**
+rather than appearing broken.
 
-### 2.2 睡眠效率
+### 2.3 Sleep efficiency
 
 | | |
 |---|---|
-| **定义** | 设备给出的 sleep efficiency（入睡时间 ÷ 卧床时间），取百分比 |
-| **判定** | 对比当前日之前 28 天的个人基线；**低于基线 5 个百分点以上**才算"偏低" |
-| **参数** | `BASELINE_WINDOW_DAYS=28`、`BASELINE_MIN_SAMPLES=7`、`EFFICIENCY_LOW_DROP=5.0` |
-| **出处** | 个人基线对比的思路见 Hopkins 的"最小有意义变化"框架；5 个百分点是本项目的取值，**不是文献阈值** |
+| Definition | the device's sleep efficiency (asleep ÷ time in bed), as a percentage |
+| Judgement | compared with the 28-day baseline; **at least 5 percentage points below** counts as low |
+| Parameters | `BASELINE_WINDOW_DAYS=28`, `BASELINE_MIN_SAMPLES=7`, `EFFICIENCY_LOW_DROP=5.0` |
+| Source | baseline comparison follows Hopkins' smallest-worthwhile-change framing; the 5-point value is this project's choice, **not a published threshold** |
 
-**已知局限：** 5 个百分点是经验取值。睡眠效率本身受佩戴方式影响很大（手表 vs 手环），
-跨设备不可比。
+**Known limitation:** 5 points is empirical. Sleep efficiency depends heavily on how the device is
+worn (watch versus band) and does not compare across devices.
 
-### 2.3 睡眠规律指数（SRI）
+### 2.4 Sleep Regularity Index (SRI)
 
 | | |
 |---|---|
-| **定义** | 相邻两天在**同一 15 分钟时刻**是否处于相同睡眠状态的一致率，按机会水平校正 |
-| **取值范围** | 0–100。100 = 完全一致，0 ≈ 与随机无异，负值 = 比随机更不一致 |
-| **参数** | `bin_minutes=15`、最多 28 对相邻日、**少于 7 对不发布数值**（`MIN_SRI_PAIRS=7`） |
-| **出处** | 思路来自 Phillips et al. 2017（SLEEP）与 Windred et al. 2024 |
-| **实现** | `metrics.sri()` |
+| Definition | agreement between adjacent days at the same 15-minute slot, corrected for chance |
+| Range | 0–100. 100 = identical, 0 ≈ random, negative = less consistent than random |
+| Parameters | `bin_minutes=15`, at most 28 adjacent pairs, **no value published below 7 pairs** (`MIN_SRI_PAIRS=7`) |
+| Source | approach after Phillips et al. 2017 (SLEEP) and Windred et al. 2024 |
+| Implementation | `metrics.sri()` |
 
-> **⚠️ 与文献的差异（重要）：** 本实现是**按机会水平校正的 kappa 式**版本
-> （`(p − chance) / (1 − chance)`），**不是** Phillips 原文的线性重标定公式
-> `−100 + 200 × (agree / total)`。两者在"完全一致 → 100""与随机无异 → 0"两个端点一致，
-> **中间段数值不同，不能与文献报告的 SRI 直接相减或比较。**
+> **⚠️ Difference from the literature:** this implementation is a **chance-corrected kappa-style**
+> ratio, `(p − chance) / (1 − chance)`, **not** Phillips' linear rescaling
+> `−100 + 200 × (agree / total)`. The endpoints agree (fully consistent → 100, random → 0);
+> **mid-range values differ, so they cannot be compared with, or subtracted from, published SRI.**
 >
-> 另外：文献里的分段（如"≥87 较规律"）来自人群三分位，**不适用于个人单点判断**，
-> 所以本项目的 UI 只给数值和方向说明，不给"规律/不规律"的分级。
+> Published bands (e.g. "≥87 is regular") come from population tertiles and **do not apply to a
+> single person**, so the interface reports the number and its direction, never a regular/irregular
+> grade.
 
-**已知局限：** 最少 7 对相邻日才发布，意味着约两周的数据才够。数据更少时该指标为 `null` 而非低分。
-
----
-
-## 三、节律
-
-### 3.1 社交时差
-
-| | |
-|---|---|
-| **定义** | 自由日（周六日）与工作日睡眠**中点**均值之差的绝对值 |
-| **参数** | 需要工作日 ≥3 个、自由日 ≥2 个有效夜晚；窗口 28 天 |
-| **出处** | Wittmann et al. 2006 |
-| **实现** | `metrics.sleep_timing()` |
-
-**已知局限：** 按周六/日划分"自由日"是近似——倒班人群不成立。
-另外 UI 里会对 <60 分钟的差值注明"通常视为无明显社交时差"，
-这个 1 小时的经验线是文献常见说法，不是硬阈值。
-
-### 3.2 日活动节律（余弦拟合 / cosinor）
-
-| | |
-|---|---|
-| **定义** | 把最近 14 天的分时步数按小时取均值，拟合 24 小时余弦：`y = MESOR + A·cos(ωt − φ)` |
-| **输出** | `mesor`（节律均值）、`amplitude`（振幅）、`acrophase_hour`（峰值时刻）、`r2`（拟合优度）、`hours_observed` |
-| **参数** | 至少 12 个小时有观测；**R² < 0.3 时不给峰值时刻**（`MIN_COSINOR_R2=0.3`） |
-| **出处** | 余弦节律分析（cosinor analysis）是昼夜节律研究的标准方法 |
-| **实现** | `metrics.cosinor()` |
-
-**两个实现要点，都对应踩过的坑：**
-
-1. **用带截距的最小二乘拟合，不用等间隔简化公式。** 等间隔公式 `b = 2/n Σ y·cos` 假定
-   24 小时均匀采样；而分时步数通常只有白天有值（夜间未佩戴）。实测：一条峰值 15:00 的
-   **完美余弦**，只保留 8–22 时观测，简化公式给出 R² = **−7.77**，最小二乘给出 **1.00**。
-2. **R² 的基准是样本均值 ȳ，不是拟合出的截距。** `Σ(y−c)²` 在 `c = ȳ` 处取最小，
-   所以恒有 `R²(ȳ) ≤ R²(mesor)`——用截距当基准只会让 R² 偏高，**系统性地放宽门槛**。
-   这个偏差只在缺测时出现（全时段等间隔时两者相等）。
-
-**已知局限：** 单一余弦假设一天只有一个活动峰。双峰作息（早起 + 傍晚运动）会被拟合成
-一个折中的峰，R² 偏低——这类数据会被门槛拦下，属于**正确的拒绝**，不是缺陷。
-
-### 3.3 基线带
-
-| | |
-|---|---|
-| **定义** | 7 日滚动均值 ± 1 个标准差，按日历窗口 |
-| **参数** | `BAND_WINDOW_DAYS=7`、`BAND_MIN_SAMPLES=3` |
-| **实现** | `insights._band()` |
-
-**已知局限：** ±1 SD 覆盖约 68% 的波动，属于描述性区间，**不是置信区间**，不要当作显著性的依据。
+**Known limitation:** 7 adjacent pairs means roughly two weeks of data. With less data the metric is
+`null`, not a low score.
 
 ---
 
-## 四、活动与负荷
+## 3. Rhythm
 
-### 4.1 负荷比（ACWR）
-
-| | |
-|---|---|
-| **定义** | 最近 7 天均值 ÷ 最近 28 天均值 |
-| **参数** | 两个窗口都必须按日历对齐；有效样本不足窗口的一半时返回 `None`，不硬算 |
-| **出处** | 急慢性负荷比框架见 Gabbett 2016（原本用于运动负荷，此处用于活动分钟/步数） |
-| **实现** | `metrics.acwr()` |
-
-> **⚠️ 关于"最佳区间"：** 文献里流传的 ACWR "0.8–1.3 甜蜜区"近年受到方法学质疑
-> （窗口相关性、比例不可比等问题）。所以本项目的 UI **只说方向与幅度**
-> （"近 7 天 ≈ 长期水平"），**不给"危险/安全"的判定色。**
-
-### 4.2 WHO 周活动量
+### 3.1 Social jetlag
 
 | | |
 |---|---|
-| **定义** | 中度分钟 + 2 × 高强度分钟，与 150 分钟/周参考值比较 |
-| **参数** | `WHO_VIGOROUS_MULTIPLIER=2.0`、`WHO_WEEKLY_ACTIVE_MINUTES=150` |
-| **出处** | WHO 2020 身体活动指南：150–300 分钟中等强度，**或** 75–150 分钟高强度（等价换算） |
-| **实现** | `insights._load()` |
+| Definition | absolute difference between mean sleep **midpoint** on free days (Sat/Sun) and workdays |
+| Parameters | at least 3 workday and 2 free-day nights; 28-day window |
+| Source | Wittmann et al. 2006 |
+| Implementation | `metrics.sleep_timing()` |
 
-**已知局限：** 直接把中等与高强度 1:1 相加会**系统性高估**活动量，所以这里按 1:2 折算，
-并在文案里注明"高强度按 2 倍计"。折算系数是 WHO 的等价换算法，不是精确的代谢当量。
+**Known limitation:** treating Saturday and Sunday as free days is an approximation and does not hold
+for shift workers. Differences under 60 minutes are annotated as "usually no meaningful social
+jetlag" — an order-of-magnitude note from the literature, not a hard threshold.
+
+### 3.2 Daily activity rhythm (cosinor)
+
+| | |
+|---|---|
+| Definition | mean intraday steps per hour over the last 14 days, fitted to a 24-hour cosine: `y = MESOR + A·cos(ωt − φ)` |
+| Output | `mesor`, `amplitude`, `acrophase_hour`, `r2`, `hours_observed` |
+| Parameters | at least 12 observed hours; **no peak time below `r2 = 0.3`** (`MIN_COSINOR_R2=0.3`) |
+| Source | cosinor analysis is the standard method in circadian research |
+| Implementation | `metrics.cosinor()` |
+
+**Two implementation points:**
+
+1. **Fit by least squares with an intercept, not the equal-interval shortcut.** The shortcut
+   `b = 2/n Σ y·cos` assumes uniform sampling across 24 hours. Intraday steps may cover only some
+   hours; the design matrix uses the actual observed times and is solved by least squares.
+2. **`r2` uses the sample mean as its reference, not the fitted intercept.** `Σ(y−c)²` is minimised
+   at `c = ȳ`, so `r2(ȳ) ≤ r2(mesor)` always: using the intercept as reference inflates `r2` and
+   systematically loosens the threshold. The two agree only when every hour is observed.
+
+**Known limitation:** one cosine assumes a single daily peak. A bimodal pattern (early rise plus an
+evening session) fits a compromise peak with low `r2` and is rejected by the threshold — a correct
+rejection, not a defect.
+
+### 3.3 Baseline band
+
+| | |
+|---|---|
+| Definition | 7-day rolling mean ± 1 standard deviation, calendar window |
+| Parameters | `BAND_WINDOW_DAYS=7`, `BAND_MIN_SAMPLES=3` |
+| Implementation | `insights._band()` |
+
+**Known limitation:** ±1 SD covers about 68% of variation. It is a descriptive range, **not a
+confidence interval**, and must not be used as evidence of significance.
 
 ---
 
-## 五、交叉关联
+## 4. Activity and load
+
+### 4.1 Load ratio (ACWR)
 
 | | |
 |---|---|
-| **定义** | 皮尔逊相关系数 r，配 Fisher z 变换的 95% 置信区间 |
-| **参数** | 每对至少 10 个样本（`MIN_CORRELATION_SAMPLES=10`）；预定义 12 对指标；Bonferroni 校正 α = 0.05/12 ≈ 0.0042 |
-| **出处** | Fisher (1921) z 变换；Bonferroni 校正为多重比较的标准做法 |
-| **实现** | `insights._correlations()`、`metrics.fisher_ci()`、`metrics.correlation_is_significant()` |
+| Definition | mean of the last 7 days ÷ mean of the last 28 days |
+| Parameters | both windows aligned by calendar; returns `None` rather than computing when either has fewer than half its days |
+| Source | acute:chronic framework after Gabbett 2016 (originally training load; applied here to active minutes and steps) |
+| Implementation | `metrics.acwr()` |
 
-**读法（重要）：**
+> **⚠️ On the "optimal range":** the widely quoted 0.8–1.3 sweet spot has drawn methodological
+> criticism (window coupling, non-comparable ratios). The interface therefore reports **direction and
+> magnitude only** ("last 7 days ≈ your longer-term level") and **never a safe/dangerous colour.**
 
-- 报告里每个相关都带 `r`、`n`、`ci_low`、`ci_high`、`excludes_zero`、`survives_correction`。
-- **`strength` 只在 CI 不跨 0 **且**通过校正时才给"强/中/弱"。** 否则显示"不显著"。
-  原因：`r = 0.6, n = 10` 看起来很强，但它 95% CI 约为 `[−0.05, 0.89]`，本来就跨 0。
-- **Bonferroni 的分母固定为 12（预定义检验总数），不用"实际算了几对"。** 因为样本不足的
-  配对会被跳过，用实际数量会让"数据越少 → 分母越小 → 校正越松 → 越容易显著"，
-  形成反向偏置；而这类数据的缺失恰恰不是随机的（不戴表的日子本身就是信息）。
+### 4.2 WHO weekly activity
 
-**关于"强度档位是否考虑样本量"（这一条容易被误读，写清）：**
+| | |
+|---|---|
+| Definition | moderate minutes + 2 × vigorous minutes, compared with the 150 min/week reference |
+| Parameters | `WHO_VIGOROUS_MULTIPLIER=2.0`, `WHO_WEEKLY_ACTIVE_MINUTES=150` |
+| Source | WHO 2020 physical activity guidance: 150–300 moderate **or** 75–150 vigorous, as equivalents |
+| Implementation | `insights._load()` |
 
-`strength_label` 本身只看 |r|（0.2 / 0.4 / 0.6 三档，Cohen 风格），**但它不是单独使用的**。
-`insights._strength()` 先做两道与样本量有关的判定，通过了才允许用档位词：
+**Known limitation:** summing moderate and vigorous 1:1 **understates** the weighted equivalent, so
+they are weighted 1:2 and the text says "vigorous counted double". The factor is WHO's equivalence
+convention, not a precise metabolic equivalent.
 
-1. Fisher 95% 置信区间不跨 0 —— CI 宽度由 n 决定；
-2. Bonferroni 校正后仍显著 —— 同样依赖 n。
+---
 
-实测同样的 `r`、不同 `n`（α=0.05/12）：
+## 5. Cross-correlations
 
-| r | n | 95% CI | 过校正 | 输出 |
+| | |
+|---|---|
+| Definition | Pearson r with a Fisher z 95% confidence interval |
+| Parameters | at least 10 samples per pair (`MIN_CORRELATION_SAMPLES=10`); 12 predefined pairs; Bonferroni α = 0.05/12 ≈ 0.0042 |
+| Source | Fisher (1921) z transform; Bonferroni for multiple comparisons |
+| Implementation | `insights._correlations()`, `metrics.fisher_ci()`, `metrics.correlation_is_significant()` |
+
+**How to read it:**
+
+- Every reported correlation carries `r`, `n`, `ci_low`, `ci_high`, `excludes_zero`,
+  `survives_correction`.
+- A **strength word is published only when the CI excludes zero *and* the pair survives correction.**
+  In the examples below, "not significant" means the pair fails the reporting criteria; it does
+  not establish that a relationship is absent or small. `r = 0.6, n = 10` looks strong, but its 95%
+  CI is about `[−0.05, 0.89]`, which includes zero.
+- **The Bonferroni denominator is fixed at 12 (the number of predefined tests), not the number of
+  pairs actually computed.** Skipped pairs would otherwise shrink the denominator on sparse data,
+  loosening the correction exactly when evidence is weakest — and the gaps are not random (days
+  without the device are themselves informative).
+
+**On whether the strength word accounts for sample size:**
+
+`strength_label` looks only at `|r|` (0.2 / 0.4 / 0.6, Cohen-style), **but it is never used alone**.
+`insights._strength()` requires two sample-dependent gates first:
+
+1. the Fisher 95% CI excludes zero — its width depends on n;
+2. the pair survives Bonferroni — also depends on n.
+
+Synthetic parameter examples: the same `r` at different `n` (α = 0.05/12):
+
+| r | n | 95% CI | Survives | Output |
 |---|---|---|---|---|
-| 0.62 | 12 | [0.072, 0.881] | 否 | 不显著（未通过多重比较校正）|
-| 0.62 | 20 | [0.245, 0.834] | 是 | 强 |
-| 0.45 | 12 | [−0.167, 0.814] | 否 | 不显著 |
-| 0.45 | 40 | [0.161, 0.668] | 是 | 中 |
+| 0.62 | 12 | [0.072, 0.881] | no | not significant (fails correction) |
+| 0.62 | 20 | [0.245, 0.834] | yes | strong |
+| 0.45 | 12 | [−0.167, 0.814] | no | not significant |
+| 0.45 | 40 | [0.161, 0.668] | yes | moderate |
 
-所以**"要不要给强度词"是随样本量变的**，不是只看 r。
+So whether a strength word appears depends on n, not on r alone. Once both gates pass, the word
+depends only on `|r|`: `r=0.62, n=20` (CI width 0.589) and `r=0.62, n=80` (width 0.276) both read
+"strong", although the second is far better estimated. Whether to vary the word with n is a product
+choice, not a defect.
 
-**真正剩下的问题只有一个（更窄）：** 一旦通过了上述两道，档位词就只按 |r| 给——
-`r=0.62, n=20`（CI 宽 0.589）和 `r=0.62, n=80`（CI 宽 0.276）都显示"强"，
-尽管后者的估计可靠得多。要不要让档位词也随 n 变化，是产品口径选择，不是错误。
+**Boundaries of the method:** Pearson r measures linear association. The `offset_days` next-day lag
+is a stated assumption, not estimated from the data.
 
-**方法本身的边界（写在这里，不写进界面）：** 皮尔逊 r 度量的是线性同向/反向关系；
-`offset_days` 的次日偏移是人设定的假设，不是从数据里估出来的。
+#### How high the bar is
 
-#### 这道门槛有多高（改门槛前必读）
+Twelve pairs tested together give Bonferroni α = 0.05/12, two-tailed critical z = 2.865. In terms of
+`|r|`:
 
-12 对指标同时检验，Bonferroni 后 α = 0.05/12，双尾临界 z = 2.865。换算成实际需要的 |r|：
-
-| 样本量 n | 通过校正所需 \|r\| | 不校正（α=0.05）所需 \|r\| |
+| n | \|r\| needed with correction | \|r\| needed without (α=0.05) |
 |---|---|---|
 | 67 | 0.344 | 0.238 |
 | 77 | 0.321 | 0.224 |
 | 84 | 0.308 | 0.218 |
 
-**2026-10-30 实测（90 天真实数据）**：12 组里 **0 组通过**，但其中 **4 组的 95% 区间不含 0**——
-深睡~静息心率 −0.284（n=77，CI [−0.477, −0.064]）、睡眠中点~HRV 0.285（n=76，[0.064, 0.48]）、
-睡眠时长~静息心率 −0.255（n=77，[−0.453, −0.033]）、步数~次日静息心率 −0.247（n=84，[−0.438, −0.034]）。
+A single-pair 95% confidence interval excluding zero does not guarantee that the pair survives
+multiple-comparison correction. A pair must meet both the corrected threshold and the minimum sample
+count. If no pair passes, there is no reportable statistical conclusion; scatter plots can still
+show the observations.
 
-> **这说明什么。** 样本量不是瓶颈（n 都在 67–84），方向也符合生理预期，
-> 但 |r| 落在 0.25–0.29，**比门槛低约 0.04**。穿戴设备测得的睡眠/活动与心率类指标之间，
-> 这个量级的相关系数是常见值，不是异常。
->
-> **所以这块界面在真实数据上会长期为空——这是门槛的算术结果，不是 bug。**
-> 如果希望它有内容，可以走三条路（都属产品口径，不是技术决定）：
-> ① 减少预定义假设对（12 → 3–4 对），门槛随检验数下降；
-> ② 把未通过单列为"探索性线索"次级区块，明确标注未过校正；
-> ③ 维持现状，只陈述"检验 N 组、无一通过"。
->
-> **改任何一条必须同时改本节**——否则下一个人会以为门槛可以随手调。
+Changing any of these numbers requires changing this section in the same commit.
 
-#### 「最接近的一组」是哪个（口径定义）
+#### Which pair counts as "closest" (definition)
 
-界面上会报一句「最接近的一组：X ~ Y（r=…, n=…）／达到门槛约需 n≈…，约再 N 天」。那组怎么挑，直接决定文案对不对得上数字。
+The interface reports "closest pair: X ~ Y (r=…, n=…) / about n≈… needed, roughly N more days".
 
 ```
-所需样本  required_n = ceil( (z_c / atanh|r|)² + 3 )
-还差样本  eta        = required_n − n
+required_n = ceil( (z_c / atanh|r|)² + 3 )
+eta        = required_n − n
 ```
 
-**规则：按 `eta` 最小者优先**，并列时比 `required_n`，再并列按标签固定次序。
+**Select by smallest `eta`**; break ties by `required_n`, then by a fixed label order.
 
-理由：那句话报的是"**约再 N 天**"，所以被指的那组必须是 N 最小的那组，否则文案自相矛盾。
-注意 `eta` **不是** `|z|=|atanh r|·√(n−3)` 的单调函数（同一 `|z|` 下 `|r|` 越大 `eta` 越小），
-所以「按 |z| 最大挑」和「按 |r| 最大挑」都只是近似，会选出不同的组。
-实测枚举 238 个未通过的组合，两者排序相反的就有 4619 对。
+The sentence promises "about N more days", so the pair it names must be the one with the smallest N,
+or the text contradicts its own number. Note that `eta` is **not** monotonic in `|z|`: at equal
+`|z|`, larger `|r|` means smaller `eta`. Selecting by largest `|z|` or largest `|r|` are both
+approximations that pick different pairs.
 
-三级排序必须写死：两条关系的 `|r|` 只差 0.001 时（真实数据上出现过 0.284 与 0.285），
-没有确定性 tie-break 会让用户刷新一次就换一行文案。
+The three-level ordering must be deterministic: when two pairs differ by 0.001 in `|r|`, an
+undefined tie-break would change the sentence on every refresh.
 
-#### 对外呈现的数字必须可复现
+#### Numbers shown must be reproducible
 
-界面或文档里出现的任何数字，都要能回答四个问题，否则它只是"看起来精确"：
+Any number in the interface or documentation must answer four questions, or it is only
+*appearing* precise:
 
-1. **哪个窗口**（近 30 天 / 近 90 天 / 全部）
-2. **什么口径**（例：「最接近」= 未通过者中 `eta` 最小，不是 `|r|` 或 `|z|` 最大）
-3. **怎么选的**（同分或近似同分时的确定性排序）
-4. **什么时候算的**（会随数据增长而变的量，不能写死，必须由后端实时算）
+1. **Which window** (last 30 days / last 90 days / all)
+2. **Which definition** (e.g. "closest" = smallest `eta` among failing pairs, not largest `|r|`)
+3. **How ties are broken** (a deterministic order for equal or near-equal values)
+4. **When it was computed** (anything that changes as data grows must be computed by the backend,
+   never hard-coded)
 
-**同类事故记录（2026-10-30 夜间，三次真实发生）：**
+If a number would change with another window, another ordering, or one more day of data, the
+interface must state its conditions or recompute it live. Doing neither produces a number that
+expires.
 
-| 事故 | 表现 | 修法 |
-|---|---|---|
-| 报告里写死 commit 短 SHA | 随后又有提交，SHA 立刻过期 | 改用「基线 commit + 说明后续只有文档提交」，或给可复现命令 |
-| `find -newermt "… 16:40"` | 按本地时区解释，与 UTC 差 8 小时，把「没写过」读成「写过」 | 时间串显式带 `UTC` 后缀 |
-| 「最接近的一组」 | 取数用 30 天窗口、页面按 90 天渲染；选择口径与文案不符 | 数值全部由后端按当前窗口实时算，前端不写死 |
-
-**判据：** 如果换个窗口、换个排序、或隔一天再算，这个数字会变——那么它必须在界面上标明条件，
-或者改成由后端按当前条件实时计算。**两条都不做，它就是个会过期的数字。**
-
-**显示规则（2026-10-30 定）：** 未通过校正的检验结果**不下发**，不采用"显示出来再补一句不显著"的做法。
-界面只用 `correlations_tested` / `correlations_hidden` 陈述计数。改这条规则必须同时改本页。
+**Display rule:** pairs that fail correction are **not sent to the interface**; the UI states counts
+via `correlations_tested` / `correlations_hidden` instead of showing a result with a disclaimer.
+Changing this rule requires changing this page.
 
 ---
 
-## 六、数据可信度（每个结论都附带）
+## 6. Data trust (attached to every conclusion)
 
-看板上的结论不是"有就算、没有就不算"，中间还有两类损耗，都必须可见：
+Conclusions are not simply present-or-absent: there are two kinds of loss in between, and both must
+be visible.
 
-| 字段 | 含义 | 说明 |
+| Field | Meaning | Notes |
 |---|---|---|
-| `coverage.days_with_archive` | 窗口内有存档的天数 | "分析窗口 30 天"≠"基于 30 天" |
-| `coverage.per_metric_days` | 每个指标实际有读数的天数 | 不同指标覆盖度不同，最弱的那项决定结论强度 |
-| `coverage.partial_days` | 存档存在但部分接口失败的天数 | 这类天"看起来有数据"，实际缺几项 |
-| `coverage.excluded_out_of_range` | 因越界被剔除的天数（按指标） | 分析层会静默剔除生理上不可能的值，不报就等于隐瞒 |
-| `coverage.sparse_days` | 字段数明显少于同窗口其他天 | 上游解析悄悄失败时，同步记录可能完全"成功" |
+| `coverage.days_with_archive` | days with an archive inside the window | "a 30-day window" ≠ "based on 30 days" |
+| `coverage.per_metric_days` | days each metric actually has readings | coverage differs per metric; the weakest one bounds the conclusion |
+| `coverage.partial_days` | days where the archive exists but some endpoints failed | these look like data days and are missing several metrics |
+| `coverage.excluded_out_of_range` | days dropped as out of range (per metric) | exclusion is silent otherwise, which is indistinguishable from not happening |
+| `coverage.sparse_days` | days with notably fewer fields than others in the window | upstream parsing can fail while the sync log reports success |
 
-**越界范围（`insights.BOUNDS`）：** 睡眠时长 0–960 分钟、睡眠效率 0–100%、
-静息心率 25–220 bpm、HRV 5–250 ms、血氧 50–100%、呼吸率 4–40 次/分、
-体重 20–300 kg、体脂 1–70%。越界值**不参与任何计算**，只被计数并报告。
+**Valid ranges (`insights.BOUNDS`):** sleep duration 0–960 min, sleep efficiency 0–100%,
+resting heart rate 25–220 bpm, HRV 5–250 ms, blood oxygen 50–100%, breathing rate 4–40 /min,
+weight 20–300 kg, body fat 1–70%. Out-of-range values enter **no calculation**; they are counted and
+reported.
 
-> **`sparse_days` 的已知盲区：** 只抓**单天离群**（某天塌了）。如果上游改字段名导致
-> **窗口内每天都少同一项**，中位数会跟着一起降，就没有离群点，检测静默——这类**均匀漂移**
-> 需要在写入侧和历史基线比对（`engine._drift_warnings`），两者盲区不同、互补。
+> **Known blind spot of `sparse_days`:** it catches **single-day** outliers only. If an upstream
+> rename removes the same field every day, the median moves with it and no day looks sparse. That
+> uniform drift is caught on the write path against the previous parse
+> (`engine._drift_warnings`); the two mechanisms have different blind spots and complement each other.
 
 ---
 
-## 七、不做的事
+## 7. What this project does not do
 
-写出来是为了防止以后有人"顺手加上"：
+Stated so that nobody adds them "while nearby":
 
-- **不做复合评分。** 没有"健康分"。恢复状态那一栏是 4 项固定规则逐项判定后的计数，
-  不是加权求和，也不换算成 0–100 的分。
-- **不做诊断。** 不输出任何疾病名称或医疗建议。
-- **不做预测。** 所有数字都是对已存档数据的描述，没有外推。
-- **不引入外部统计依赖。** 正态分位数、最小二乘、显著性检验都在 `metrics.py` 里手写，
-  保持零依赖纯函数，便于单测和审计。
+- **No composite score.** There is no health score. The recovery panel counts four fixed rules,
+  item by item; it is not a weighted sum and is not rescaled to 0–100.
+- **No diagnosis.** No disease names, no medical advice.
+- **No prediction.** Every number describes archived data; nothing is extrapolated.
+- **No external statistics dependency.** Normal quantiles, least squares, and significance tests are
+  written in `metrics.py` as pure functions, so they can be unit-tested and audited.

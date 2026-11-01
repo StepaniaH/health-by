@@ -1,96 +1,114 @@
-# 数据覆盖与已知坑 — Google Health API v4
+# Data coverage and known pitfalls — Google Health API v4
 
-> 来源：对 OpenFit 源码的调研（`research-openfit/`）+ Google 官方文档 + 本项目实现的交叉验证。
-> 本页是"接口工艺"的知识沉淀；代码中的相关处均有对应注释。
+[Chinese](zh/data-coverage.md)
 
-## 读取任务（31 个）
+Sources: cross-checked against the OpenFit source review, Google's documentation, and this project's
+implementation. Each item below has a matching comment in the code.
 
-| 类别 | 任务 | 端点 | 窗口 |
+## Read tasks (31)
+
+| Category | Tasks | Endpoint | Window |
 |---|---|---|---|
-| 元数据 | identity / profile / settings / pairedDevices / irnProfile / userinfo | GET `/users/me/*`、`oauth2/v3/userinfo` | — |
-| 日汇总 ×12 | 步数 / 总卡路里 / 距离 / 楼层 / 活跃分钟 / 活动区分钟 / 久坐 / 体重 / 体脂 / 饮水 / 营养 / 核心体温 | POST `dataPoints:dailyRollUp`（civil 区间，`windowSizeDays=1`） | 14 天 |
-| 每日记录 ×6 | 静息心率 / HRV / 血氧 / 呼吸率 / 睡眠皮温 / VO₂max | GET `dataPoints:reconcile` | 14 天 |
-| 会话 | 睡眠（`google-wearables`）/ 运动 | GET `dataPoints:reconcile` | 14 天 |
-| 独立 | ECG（`list`）/ 不规则心律通知（`list`）/ 血糖 | GET `dataPoints` | 90 天 / 14 天 / 14 天 |
-| 日内 | 分时步数 / 分时心率（`google-wearables`，`list`） | GET `dataPoints` | 选中日 |
+| Metadata | identity / profile / settings / pairedDevices / irnProfile / userinfo | GET `/users/me/*`, `oauth2/v3/userinfo` | — |
+| Daily rollup ×12 | steps / total calories / distance / floors / active minutes / active zone minutes / sedentary / weight / body fat / water / nutrition / core temperature | POST `dataPoints:dailyRollUp` (civil range, `windowSizeDays=1`) | 14 days |
+| Daily records ×6 | resting heart rate / HRV / blood oxygen / breathing rate / sleep skin temperature / VO₂max | GET `dataPoints:reconcile` | 14 days |
+| Sessions | sleep (`google-wearables`) / exercise | GET `dataPoints:reconcile` | 14 days |
+| Standalone | ECG (`list`) / irregular rhythm notifications (`list`) / blood glucose | GET `dataPoints` | 90 / 14 / 14 days |
+| Intraday | intraday steps / intraday heart rate (`google-wearables`, `list`) | GET `dataPoints` | selected day |
 
-`reconcile` = 官方"对账流"：跨所有数据源（设备 + 第三方 App + 手动记录）自动去重合并，
-与用户在 Fitbit App 看到的数据一致；不需要跨源合并时用 `list`。
+`reconcile` is the official reconciliation stream: it de-duplicates and merges across every source
+(device, third-party apps, manual entries) and matches what the user sees in the Fitbit app. Use
+`list` where no cross-source merge is wanted.
 
-## 已确认的坑（代码中已处理）
+## Confirmed pitfalls (handled in code)
 
-1. **`dailyRollUp` 区间结尾**：实测要求"当日 23:59:59"（`civilDateTime(end_of_day=True)`），
-   官方文档的闭开区间语义会得到缺最后一天的结果。见 `client.py` 注释。
-2. **reconcile 重复聚合**：同一阶段会被重复返回（不同 count）→ 按原始类型取 `max` 去重。
-3. **`ASLEEP` 双计**：`stagesSummary` 里 `ASLEEP` 是 `LIGHT/DEEP/REM` 的合计；
-   存在明细阶段时必须跳过它，否则睡眠分钟数翻倍。
-4. **睡眠归属日**：按 `civil_end_time` 的日期归属（跨午夜会话记到醒来那天）；
-   小睡由 `metadata.nap == true` 标记，单独统计。
-5. **单位换算**：距离 `millimetersSum` → km（÷10⁶）；duration 形如 `"1920s"`；
-   久坐 `durationSum` 秒 → 分钟；体重 `weightGramsAvg` 克 → kg。
-6. **出站限速 <5 req/s**：全客户端统一节流（默认 225ms 间距）；429 按 `retry-after`
-   或指数退避（上限 30 秒，最多重试 2 次）；分页守卫 100 页。
-7. **401 = 授权失效**：统一抛"需要重新连接"（对应测试模式令牌政策，见下）。
-8. **filter 语法**：按记录类型拼字段路径——daily：`{type}.date`；sleep：`sleep.interval.civil_end_time`；
-   ecg：`electrocardiogram.interval.start_time`；sample：`{type}.sample_time.civil_time`；
-   interval：`{type}.interval.civil_start_time`。类型名中的 `-` 要替换成 `_`。
+1. **`dailyRollUp` range end** — in practice the range must end at 23:59:59 of the last day
+   (`civilDateTime(end_of_day=True)`); the documented half-open semantics drops the final day. See the
+   comment in `client.py`.
+2. **Reconcile double aggregation** — the same stage can come back more than once with different
+   counts; de-duplicate by taking the `max` per original type.
+3. **`ASLEEP` counted twice** — in `stagesSummary`, `ASLEEP` is the total of `LIGHT/DEEP/REM`; when
+   detailed stages exist it must be skipped, or sleep minutes double.
+4. **Sleep attribution day** — a session is dated by the `civil_end_time` date, so a session crossing
+   midnight belongs to the waking day; naps carry `metadata.nap == true` and are counted separately.
+5. **Unit conversion** — distance `millimetersSum` → km (÷10⁶); duration as `"1920s"`; sedentary
+   `durationSum` seconds → minutes; weight `weightGramsAvg` grams → kg.
+6. **Outbound rate limit <5 req/s** — one throttle across the client (default 225 ms spacing); 429
+   honours `retry-after` or falls back to exponential backoff (cap 30 s, at most 2 retries);
+   pagination guard at 100 pages.
+7. **401 = authorization expired** — raised uniformly as "reconnect required" (see the testing-mode
+   token policy below).
+8. **Filter syntax** — field paths are assembled per record type: daily `{type}.date`; sleep
+   `sleep.interval.civil_end_time`; ECG `electrocardiogram.interval.start_time`; sample
+   `{type}.sample_time.civil_time`; interval `{type}.interval.civil_start_time`. A `-` in a type name
+   becomes `_`.
 
-## 真实数据实测（2026-10-27，Fitbit Air，Asia/Shanghai）
+## Raw payload shape
 
-首次真实同步（S6）：**31/31 项成功、0 错误**；`stepsIntraday` 合计与 `dailyRollUp` 全天值精确一致。
+**Normalization rules**
 
-**真实载荷与演示形状的三处关键差异（已修复）**
+1. **Record endpoints carry no `civil*` fields** — `sleep`, `activities`, and `ecg` return physical
+   time, for example `2026-01-15T17:03:00Z` plus `startUtcOffset: "28800s"` (synthetic example).
+   Ignoring the offset can place an overnight session on the wrong local day and shift displayed
+   times by 8 hours. The translation layer converts through `_civil_iso()` to ISO with a local
+   offset. (`dailyRollUp` and the sample/interval endpoints — `stepsDaily`, `restingHeartRaw`,
+   `stepsIntraday`, `heartIntraday` — already carry `civil*` and need no conversion.)
+2. **One metric, several sources** — a day's `stepsIntradayRaw` may include several sources, such as
+   `FITBIT/Fitbit Air`, `FITBIT/MobileTrack`, and `HEALTH_KIT`. Summing sources can double-count
+   observations. Normalization selects one dominant source by precedence
+   ("Fitbit platform device > other Fitbit platform > unnamed"); heart rate follows the same rule.
+3. **Minute aggregation of heart-rate samples** — samples are averaged into minutes on write,
+   while `hr_min`/`hr_max` retain the original extremes. Raw payloads are archived per day for
+   recomputation.
 
-1. **record 类接口没有 `civil*` 字段**：`sleep` / `activities`（运动）/ `ecg` 只给物理时间
-   `2026-10-26T17:03:00Z` + `startUtcOffset: "28800s"`。直接按 UTC 处理会把跨夜睡眠记到前一天、
-   界面时间显示偏 8 小时。翻译层统一经 `_civil_iso()` 转成带本地偏移的 ISO。
-   （`dailyRollUp` 与 sample/interval 类端点——`stepsDaily`、`restingHeartRaw`、`stepsIntraday`、
-   `heartIntraday`——本身带 `civil*`，无需转换。）
-2. **同一指标多数据源重复**：一天的 `stepsIntradayRaw` 同时来自
-   `FITBIT/Fitbit Air`、`FITBIT/MobileTrack`、`HEALTH_KIT` 三个来源各自的日汇总彼此接近。
-   直接累加会得到约 3 倍于真实步数的值。现按"Fitbit 平台设备 > Fitbit 平台其它 > 无设备名"只取单一主导来源，
-   心率同样处理。
-3. **心率采样密度**：真实设备约 2.5 秒一个采样（一天可达数万个采样点，单日原始快照 1MB 量级）。
-   现按分钟求均值入库（约 1,400 点/天，单日快照数十 KB）；`hr_min/hr_max` 仍取原始采样极值。
-   原始载荷仍按天留档，可随时重算。
+**What one typical day looks like (demo data)**
 
-**一次典型单日的字段面貌（演示数据）**
-
-| 指标 | 示例值 |
+| Metric | Example values |
 |---|---|
-| 步数 / 距离 / 热量 | 9,120 步 / 6.7 km / 2,240 kcal |
-| 活跃分钟 / 久坐 / 爬楼 | 62 min / 540 min / 5 层 |
-| 睡眠 | 432 min（23:40–07:12，效率 95%，深 76 / 浅 210 / REM 128 / 醒 18） |
-| 静息心率 / 心率区间 | 58 bpm / 52–128 bpm（分钟聚合后） |
-| HRV / SpO₂ / 呼吸率 | 42.0 ms / 97.0% / 15.0 次/分 |
-| 运动 | 步行 30 min（3,100 步） |
+| Steps / distance / calories | 9,120 steps / 6.7 km / 2,240 kcal |
+| Active minutes / sedentary / floors | 62 min / 540 min / 5 flights |
+| Sleep | 432 min (23:40–07:12, efficiency 95%, deep 76 / light 210 / REM 128 / awake 18) |
+| Resting HR / HR range | 58 bpm / 52–128 bpm (after minute aggregation) |
+| HRV / SpO₂ / breathing rate | 42.0 ms / 97.0% / 15.0 /min |
+| Exercise | walking 30 min (3,100 steps) |
 
-> 上表是**演示数据**的形状示例，不是任何个人的测量值。演示模式（无需凭据）可复现同样的字段结构。
+> The table above is a **demo-data** shape example, not anyone's measurements. Demo mode (no
+> credentials) reproduces the same field structure.
 
-**无数据（设备/账号未产生，非错误）**：体重、体脂、饮水、营养、血糖、ECG、不规则心律、核心体温。
-UI 对这些区块整体隐藏。
+**Optional data:** availability of weight, body fat, water, nutrition, blood glucose, ECG,
+irregular rhythm, and core temperature depends on the device and account. The interface hides
+sections with no corresponding data.
 
-**历史深度（2026-10-28 探测）**：步数日汇总可回溯到至少 2026-03-29（约 200 天前）；睡眠会话列表最早
-2026-03-15。API 的 `dailyRollUp` 单次区间上限：心率/活动分钟/消耗热量/心率区间为 14 天，其余类型 90 天；
-本项目按天抓取 14 天窗口，因此回填不受单次区间限制。超过账户最早数据的日期返回空 → 引擎不落库（`empty`）。
+**History depth:** how far back the data reaches depends on the account and the device; daily step
+rollups and the sleep session list each stop at the account's first day of data. A single `dailyRollUp` range is capped at 14 days for heart rate,
+active minutes, calories, and heart-rate zones, and 90 days for other types; this project fetches
+14-day windows day by day, so backfill is not limited by the per-request cap. Dates earlier than the
+account's first data return empty, and the engine writes nothing (`empty`).
 
-**分析层读数校验**：上游偶尔会给出无效读数（例如某天 HRV 为 0），设备未提供有效值时会这样返回。分析层对 HRV（5–250 ms）、
-静息心率（25–220 bpm）、血氧（50–100%）、睡眠时长（0–16 小时）等做范围校验，越界值不参与基线/相关计算；
-原始载荷仍完整保留在 `raw_days`，可追溯。极端的低值（例如某天睡眠远低于平常）如果是真实测量，会保留并如实展示，而不是当作异常丢弃。
+**Read validation in the analysis layer:** upstream occasionally returns an invalid reading (for
+example an HRV of 0 when the device had no valid value). The analysis layer range-checks HRV
+(5–250 ms), resting heart rate (25–220 bpm), blood oxygen (50–100%), and sleep duration (0–16 h);
+out-of-range values enter no baseline or correlation computation, while the raw payload stays intact
+in `raw_days` and remains traceable. An extreme low that is a genuine measurement — a night far
+shorter than usual — is kept and shown as measured, not discarded as an anomaly.
 
-## 硬限制（产品层面）
+## Hard limits (product level)
 
-- **无蓝牙直连**：第三方应用的唯一通道是云端 API；数据新鲜度取决于用户手机端 App 同步。
-- **可得性差异**：ECG / 不规则心律 / 血糖等取决于设备型号、地区、固件、授权范围——缺失是常态，
-  不是错误；UI 对缺失区块整体隐藏。
-- **测试模式 7 天令牌**：外部用户类型 + Testing 状态的应用，refresh token 每 7 天过期
-  （Google 官方 OAuth 政策，无豁免）→ 设置页提供状态提示与一键重连。
-- **API 演进中**：官方声明 2026 年内可能有需要跟进的变更 → 翻译层全容错 + 原始留档可重算。
+- **No direct Bluetooth** — a third-party app can only use the cloud API, so freshness depends on the
+  user's phone syncing.
+- **Availability differs** — ECG, irregular rhythm, and blood glucose depend on model, region,
+  firmware, and granted scopes. Absence is normal, not an error, and the interface hides those
+  sections entirely.
+- **7-day tokens in testing mode** — for External user type with Testing status, the refresh token
+  expires every 7 days (Google's OAuth policy, no exemption). Settings shows the state and offers a
+  one-click reconnect.
+- **API in motion** — Google states changes may require follow-up during 2026, so the translation
+  layer is fully tolerant and the raw archive can be recomputed.
 
-## 官方参考
+## Official references
 
-- 数据与端点：`developers.google.com/health/data-types`、`/health/endpoints`
-- 迁移指南（旧 Fitbit Web API → GHA）：`developers.google.com/health/migration`
-  （旧 API：2026-09-30 停止支持，**2026-10-30 彻底关停**）
-- OAuth 令牌政策：`developers.google.com/identity/protocols/oauth2`
-- 官方 CLI（取数参考）：`github.com/Google-Health-API/google-health-cli`（Apache-2.0）
+- Data and endpoints: `developers.google.com/health/data-types`, `/health/endpoints`
+- Migration guide (legacy Fitbit Web API → GHA): `developers.google.com/health/migration`
+  (legacy API: unsupported from 2026-09-30, **fully shut down 2026-10-30**)
+- OAuth token policy: `developers.google.com/identity/protocols/oauth2`
+- Official CLI (fetch reference): `github.com/Google-Health-API/google-health-cli` (Apache-2.0)
