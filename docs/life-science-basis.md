@@ -1,169 +1,209 @@
-# 本地统计的计算边界
+# Computation limits for local statistics
 
-各项本地统计的计算口径、参数与适用边界。这些阈值是产品显示规则，不是临床判据。
+[Chinese](zh/life-science-basis.md)
 
-## 原始日期覆盖率
+How each local statistic is computed, which parameters it uses, and where it stops being
+applicable. These thresholds are display rules, not clinical criteria.
 
-`GET /api/v1/coverage` 和 `health-by status` 比较原始留档中的测量日期与 `days` 的归一化日期。
-`/summary` 的 `day.coverage` 同样包含这四个覆盖字段，原有接口请求成功率字段保留；计算来源一致。
-`raw_days` 是 `hrvRaw` 和 `sleepRaw` 内嵌日期的并集大小，不是原始表行数。
-HRV 按记录自带日期，睡眠按本地结束日归属，与翻译器使用同一套日期解析；重复出现的日期只计一次。
+## Raw date coverage
 
-`normalized_days` 为 `days` 的行数；`missing_count` 是原始日期并集中尚无归一化行的完整数量，
-`missing` 按日期升序最多列出 30 项。这是日期级覆盖检查，不保证某一天每个指标都完整，
-也不表示这些日期的数据已经回填；查询不会修改数据库或调用上游服务。
-原始留档首次需要完整扫描；Web 应用随后复用结果，并在本连接写入或其它连接提交后失效，避免每次切日都重读大型留档。
+`GET /api/v1/coverage` and `health-by status` compare the measurement dates inside the raw archive
+with the normalized dates in `days`. `day.coverage` in `/summary` carries the same four fields; the
+existing per-endpoint success fields are kept, and the source of truth is the same.
 
-该集合可独立复算：分别取 HRV 的记录日、睡眠的本地结束日，按相同日期解析规则求并集，
-再与 days 的日期集合作差；不能用载荷行日期代替测量日期，也不能只核 HRV 而遗漏睡眠。
-missing 是最多 30 项的列表，完整缺口数以 missing_count 为准。
+`raw_days` is the size of the union of the dates embedded in `hrvRaw` and `sleepRaw` — not the number
+of rows in the raw table. HRV is dated by the record's own date and sleep by its local end day, parsed
+by the same code the translator uses; repeated dates count once.
 
+`normalized_days` is the number of rows in `days`. `missing_count` is the full number of raw dates
+that still have no normalized row, and `missing` lists at most 30 of them in ascending order. This is
+a date-level check: it does not guarantee every metric is complete on a listed day, and it does not
+mean those dates have been backfilled. The query neither writes to the database nor calls upstream.
+The raw archive is scanned in full once; the web app then reuses the result and invalidates it when
+this connection writes or another connection commits, so switching dates does not re-read a large
+archive every time.
 
-## 基线段的水平变化
+The set is independently reproducible: take HRV record dates and sleep local end days, apply the same
+date parsing, union them, and subtract the `days` date set. A payload row's date must not stand in for
+a measurement date, and checking HRV alone would miss sleep. `missing` is capped at 30 entries; the
+full count is `missing_count`.
 
-`regime.detect_break` 对按日期排序的有效日观测枚举切点，前后各至少 14 个样本。
-用前后均值差的绝对值除以合并组内样本标准差：
-`pooled_sd² = (SS_before + SS_after) / (n_before + n_after - 2)`。
-取效应量最大的切点，达到 0.8 才报告，同分取最早日期；切点当天归入后段。
-两段都恒定但均值不同的零分母情况用最大有限浮点数表示，避免非法 JSON。
-这是效应量启发式，阈值不是显著性检验，也不能证明测量方式或生理原因发生变化。
+## Level changes in the baseline segment
 
-个人基线仍以所选日前的 28 个日历日为最大窗口，排除所选日。
-**统计跳变检测未启用**：`analysis.comparisons.<metric>.break` 保留字段但恒为 null，
-不会产生提示，也不改变基线中位数、标准差、样本数或起点。
-上面的纯函数保留供研究与复算；它不是产品当前启用的判据。
-固定种子 20241101 的合成实验（每条 56 点）中，纯噪声 300 次检出 14 次，
-随机游走 300 次检出 289 次；在所有这些情形中，产品 `break` 均为 null、基线保持原窗口。
-扫描切点与序列自相关会放大偶然差异，不能凭这个效应量区分真跳变与游走。
-重启用前需要可控制误报的方法或独立的外部事件证据，并重新验收。
+`regime.detect_break` enumerates split points over valid daily observations sorted by date, requiring
+at least 14 samples on each side. It divides the absolute difference of the before/after means by the
+pooled within-group standard deviation:
 
-仅 `field_appears` 的持续首现证据允许收缩基线：
-首个有效读数前连续 7 个日历日均有存档且该字段无有效读数，随后连续 3 个日历日均有有效读数。
-没有存档的日期不算缺测证据，已有读数后的断档恢复不算首现。
-静息心率、HRV、呼吸率、血氧的零读数可作为无读数证据；
-皮温差、步数、睡眠时长及其它字段的零值仍是有效值，不能凭“零变非零”收缩基线。
-皮温从缺测变为持续的零值，也可以成为字段首现。
+`pooled_sd² = (SS_before + SS_after) / (n_before + n_after - 2)`
 
-`valid_from` 为窗口起点与持续首现日期的较晚者；只用此日起的有效读数计算基线。
-`field_appearance` 单独回显首现日期，统计候选和首现证据互不替代。
-有效样本不足 7 日时基线为空，`insufficient_reason` 说明不足原因，不混回首现前的数据。
-页面显示首现后的起点及有效天数，不显示统计跳变候选。
-这些都是该字段的数据覆盖边界，不能证明其它指标的算法变更。
+The split point with the largest effect size is reported only at or above 0.8, with ties taking the
+earliest date; the split day belongs to the later segment. When both segments are constant with
+different means, the zero denominator is reported as the largest finite float, so the JSON stays
+valid. This is an effect-size heuristic: the threshold is not a significance test, and it cannot
+establish that the measurement method or a physiological cause changed.
 
+The baseline still uses at most the 28 calendar days before the selected day, excluding it.
+**Statistical break detection is disabled:** `analysis.comparisons.<metric>.break` keeps its field but
+is always null; it raises no notice and does not change the baseline median, standard deviation,
+sample count, or start. The pure function is kept for research and recomputation; it is not a
+criterion the product currently applies. In a synthetic experiment with seed 20241101 (56 points per
+series), pure noise triggered 14 times in 300 runs and a random walk 289 times in 300; in every case
+the product's `break` stayed null and the baseline kept its window. Scanning split points over an
+autocorrelated series amplifies chance differences, so this effect size cannot separate a real step
+from a random walk. Re-enabling it needs a method that controls false positives, or independent
+external event evidence, and fresh acceptance.
 
-## 周内 / 周间方差比与显示值
+Only sustained field appearance from `field_appears` may shrink the baseline: seven consecutive
+calendar days with an archive and no valid reading for the field, followed by three consecutive
+calendar days with valid readings. Days without an archive are not evidence of absence, and a gap
+that recovers after readings exist is not a first appearance. Zero readings count as no-reading
+evidence for resting heart rate, HRV, breathing rate, and blood oxygen; for skin temperature
+deviation, steps, sleep duration, and other fields a zero is a valid value, so "zero became non-zero"
+must not shrink the baseline. Skin temperature moving from missing to a sustained zero does count as
+a first appearance.
 
-这是一种显示方式的启发式选择，不是测量可靠性的临床验证，也不把日间变化归因为噪声。
-函数名 `reliability.icc` 为接口约定；实际方法为 **variance_ratio**，不是标准 ANOVA ICC。
+`valid_from` is the later of the window start and the sustained first-appearance date; only valid
+readings from that date onward enter the baseline. `field_appearance` reports the first-appearance
+date separately, and statistical candidates and appearance evidence never substitute for each other.
+With fewer than 7 valid samples the baseline is empty, and `insufficient_reason` states why; data from
+before the first appearance is never mixed back in. The interface shows the post-appearance start and
+valid day count, not statistical break candidates. These are coverage boundaries of that field; they
+do not establish an algorithm change for other metrics.
 
-以所选日结束的 56 个日历日为窗口，只读归一化 `days`。
-按 ISO 年与 ISO 周分组，每周至少 3 个有效观测，至少 3 个合格周才计算：
-`bvar = 各周均值的总体方差`，`wvar = 各周总体方差的等权平均`，
-`reliability = bvar / (bvar + wvar)`。每周等权，缺失日不补零。
-总方差为零或合格周不足时返回 null；周均值相同而周内有变化时返回 0。
-合成向量的可复算期望值为 0.99715099715、937/6702 和 0，见单元测试。
+## Within-week / between-week variance ratio and display values
 
-`analysis.reliability_basis` 回显窗口、最小周数、阈值、方法及定义，
-并以指标为键分别给出 `weeks`、`mean_days_per_week`；各指标缺测不同，不能共用一个样本量。
-这个比值受周内观测数量和分组影响，0.4 是产品显示阈值，不是经校准的健康或数据质量分界。
+This is a heuristic for choosing a display, not a clinical validation of measurement reliability, and
+it does not attribute day-to-day variation to noise. The function name `reliability.icc` is an
+interface convention; the method is a **variance ratio**, not a standard ANOVA ICC.
 
-`analysis.reliability / display_mode / display_values / insufficient` 使用与
-`comparisons` 完全相同的七个指标键。状态类指标比值小于 0.4 时默认显示右对齐的 7 日均值；
-不足或无法计算时保留日值，并回显 `insufficient: true`。
-行为类指标始终显示日值；七项中的步数即使比值低也不计算滚动显示值。
+The window is the 56 calendar days ending on the selected day, reading normalized `days` only.
+Grouping by ISO year and ISO week, with at least 3 valid observations per week and at least 3
+qualifying weeks:
 
-7 日均值使用最近 7 个**日历日**中可用观测，不是最近 7 条记录；窗口全缺测才为空。
-`rolling` 序列前缀使用当时可用日数。后端计算及按指标精度舍入 `display_values`，
-页面只呈现并加「7 日均值」标签，不重新计算。
-原始日快照、单晚睡眠明细及日内心率曲线保持当天读数；滚动卡片不配当天基线差的文案。
-滚动整窗缺测显示「近 7 天没有数据」，不显示为零。
+```
+bvar = population variance of the weekly means
+wvar = equally weighted mean of the weekly population variances
+reliability = bvar / (bvar + wvar)
+```
 
+Weeks are weighted equally and missing days are not zero-filled. A zero total variance, or too few
+qualifying weeks, returns null; identical weekly means with within-week variation returns 0.
+Reproducible expected values for the synthetic vectors are 0.99715099715, 937/6702, and 0 — see the
+unit tests.
 
-`comparisons.<metric>.current` 与 `display_values.<metric>` 相同；
-`current_daily` 单独保留原始日值。`difference / percent_change` 均按前者与基线计算，
-使用比较值的标题与解读也按指标标注「当日」或「近 7 日均值」。
-日值事实与滚动摘要是不同时间口径，不可借用彼此的差额。
+`analysis.reliability_basis` echoes the window, minimum weeks, threshold, method, and definition, and
+reports `weeks` and `mean_days_per_week` per metric: metrics go missing on different days, so they
+cannot share one sample size. The ratio is affected by how many observations each week holds and how
+weeks are grouped; 0.4 is a display threshold for this product, not a calibrated boundary of health or
+data quality.
 
-### 比值怎么读
+`analysis.reliability / display_mode / display_values / insufficient` use exactly the same seven
+metric keys as `comparisons`. When a state metric's ratio is below 0.4 the display defaults to a
+right-aligned 7-day average; when data is insufficient or the ratio cannot be computed, the daily
+value is kept and `insufficient: true` is echoed. Behaviour metrics always display daily values;
+steps, one of the seven, gets no rolling display value even when its ratio is low.
 
-本文件不记录具体部署的健康统计值。需要当前结果时，看 /summary 的
-analysis.reliability 与 analysis.reliability_basis；解释时必须带上窗口、
-实际参与的周数与平均每周观测天数。
+The 7-day average uses the observations available in the last 7 **calendar days**, not the last 7
+records; it is empty only when the whole window is missing. The `rolling` series prefix uses the days
+available at that point. The backend computes and rounds `display_values` to each metric's precision;
+the page only presents them with a "7-day average" label and never recomputes. Raw daily snapshots,
+single-night sleep detail, and intraday heart-rate curves keep the day's own readings; rolling cards
+carry no same-day baseline-difference copy. A fully missing rolling window shows "no data in the last
+7 days" rather than a zero.
 
-比值越接近 1，表示本算法中的周均值差异相对周内波动更大；
-越接近 0，则相对更小。它不能区分测量误差、真实日间变化或生活安排，
-也不能证明某个单日读数代表整段时间的身体状态。
-状态类指标与行为类指标采用不同的产品显示规则，不能仅凭比值给它们排名。
+`comparisons.<metric>.current` equals `display_values.<metric>`; `current_daily` keeps the raw daily
+value separately. `difference` and `percent_change` are computed from the former against the
+baseline, and headings and interpretations that use the comparison value label each metric as "today"
+or "7-day average". A daily fact and a rolling summary are different time bases and never borrow each
+other's differences.
 
-每周观测天数、缺失分布和分组会影响结果。0.4 仅为当前固定显示阈值，
-**本项目没有完成它在人群或不同缺失模式下的临床校准**。
-接口回显样本结构；本轮没有根据稀疏程度动态调整阈值或另算置信度。
+### How to read the ratio
 
-## 附录 A · 可复算基准
+This document records no health statistics from any deployment. For current results, read
+`analysis.reliability` and `analysis.reliability_basis` in `/summary`, and quote them together with
+the window, the number of qualifying weeks, and the mean observations per week.
 
-下面三组纯合成向量用于核对公式，不用于校准显示阈值。A、B 各为 5 周 × 7 天，
-C 为 3 周 × 4 天。每个内层列表是一周的有效观测：
+A ratio nearer 1 means between-week differences in the weekly mean are larger than within-week
+variation under this method; nearer 0 means the opposite. It cannot separate measurement error, real
+day-to-day change, or life circumstances, and it cannot establish that a single day's reading
+represents a whole period. State metrics and behaviour metrics follow different display rules, and the
+ratio is not a basis for ranking them.
+
+Observations per week, the pattern of gaps, and the grouping all affect the result. 0.4 is only the
+current fixed display threshold; **no clinical calibration across populations or missing-data patterns
+has been done.** The endpoint echoes the sample structure; this round does not adjust the threshold by
+sparsity or compute a separate confidence level.
+
+## Appendix A · Reproducible benchmarks
+
+Three purely synthetic vectors check the formula; they are not used to calibrate display thresholds.
+A and B are 5 weeks × 7 days, C is 3 weeks × 4 days; each inner list is one week of valid
+observations:
 
 ```python
 A = [[49,50,51,50,49,50,51],[59,60,61,60,59,60,61],[69,70,71,70,69,70,71],
-     [79,80,81,80,79,80,81],[89,90,91,90,89,90,91]]      # 周间差异大      → 0.99715099715
+     [79,80,81,80,79,80,81],[89,90,91,90,89,90,91]]      # large between-week gap → 0.99715099715
 B = [[50,90,10,70,30,80,20],[60,20,100,30,90,10,80],[70,30,110,40,100,20,90],
-     [40,80,0,60,20,70,10],[30,70,-10,50,10,60,0]]       # 周内波动相对更大 → 937/6702
-C = [[60,61,59,60],[60,61,59,60],[60,61,59,60]]          # 各周完全相同    → 0
+     [40,80,0,60,20,70,10],[30,70,-10,50,10,60,0]]       # within-week varies more → 937/6702
+C = [[60,61,59,60],[60,61,59,60],[60,61,59,60]]          # identical weeks       → 0
 ```
 
-**C 的期望是 0**：各周均值相同、组间方差为 0，而周内方差非零，所以比值为 0。
-如果周内、周间方差同时为零，分母为零，应返回 null。
-`null` 只表示"算不出来"，两者在显示规则里的处置不同。
+**C is expected to be 0**: weekly means are equal so the between-week variance is 0, while within-week
+variance is not, giving a ratio of 0. If both variances were zero the denominator would be zero and
+null should be returned. `null` means only "cannot be computed", and the two are handled differently
+by the display rule.
 
-## 附录 B · 本轮没有建立的能力
+## Appendix B · What this round did not establish
 
-- 没有验证自主神经机制，不能从方差比或滚动均值推出“副交感饱和”等机制。
-- 没有做指标间测量可靠性的直接对照，不能据此声称呼吸率、静息心率或 HRV 谁更可靠。
-- 没有跨设备或跨算法校准，不能把不同来源的绝对值当作同一量尺。
-- 没有人群参照或临床阈值；个人历史基线仅用于描述比较，不判定“正常 / 异常”。
-- 没有因果识别方法；变化与某个事件同日出现，只能描述时间上的重合，不能据此归因。
+- No autonomic mechanism was validated; variance ratios or rolling means cannot support a mechanism
+  such as "parasympathetic saturation".
+- No head-to-head comparison of measurement reliability between metrics was done, so no claim is made
+  that breathing rate, resting heart rate, or HRV is the more reliable.
+- No cross-device or cross-algorithm calibration was done, so absolute values from different sources
+  are not the same ruler.
+- There is no population reference and no clinical threshold; personal history baselines support
+  descriptive comparison only and never a normal/abnormal verdict.
+- There is no causal identification; a change coinciding with an event supports a description of
+  timing, not attribution.
 
+## Dual basis: today and 7-day average
 
-## 当日值与 7 日均值双口径
+The single-day input `daily-v2` distinguishes the two time bases in the field names:
 
-单日输入 daily-v2 在字段名上区分两种时间口径：
+- `*_today` is the selected day's value, not necessarily the server's today.
+- The six state metrics also carry `*_7d`, the mean of available observations across the 7 calendar
+  days ending on the selected day.
+- Behaviour metrics such as activity provide the daily value only; other existing daily fields are
+  also suffixed `*_today`.
+- Missing measurements keep the field and fill `null`; a legitimate zero stays zero, and zero must
+  never stand in for missing. A `null` `*_7d` means the calendar window has no usable reading, which
+  says more than "the selected day is missing".
+- A `null` in a fixed correlation slot means something else: there is no citable outgoing conclusion
+  this round. It must not be read as missing data, a failed correction, or zero correlation;
+  statistics that fail correction are not sent.
 
-- *_today 指所选日的当日值，不一定是服务器今天。
-- 六项状态指标另有 *_7d，取所选日结束的 7 个日历日中可用观测的平均值。
-- 活动等行为指标只提供当日值。其它已有日字段也标为 *_today。
-- 测量缺失时保留字段并填 null；合法零值仍保留零，不能用零代替缺测。
-  *_7d 的 null 表示该日历窗口没有可用读数，并非只说所选日缺测。
-- 相关性固定槽位的 null 另有含义：本轮没有可引用的外发结论。
-  不可据此推断缺测、未通过校正或零相关；未通过校正的统计值不外发。
+### When the two values are equal
 
-### 两个值相等时
+Display precision, data distribution, missing days, and the window all affect whether the two values
+coincide. When they do there is no visible difference to explain, but **equal values are still
+different time bases** and the text must still say which one it means. One field contract therefore
+covers both the equal and unequal cases without a per-metric protocol. The extra fields and token cost
+remain: equal numbers are not zero cost, and they do not remove the obligation to state the basis.
 
-显示精度、数据分布、缺测和窗口都会影响两值是否相等。
-相等时没有额外的可见数值差异，但**相同数值仍是不同时间口径**，文本仍需明确标注。
-这让一套字段契约能处理相等与不同的情况，无需按指标设计不同协议。
-额外字段和 token 成本仍存在，不能把“数值相同”理解为零成本或无需说明口径。
+### Checking the time basis
 
-### 参考部署的验收观察
+The frequency of equal values depends on the sample, window, and display precision. It does not
+establish measurement reliability and is not used to set the 0.4 display threshold.
 
-本轮单一部署的早期验收报告按显示精度记录过以下比例：
+Manual sampling is stratified by whether the two values differ: at most 10 samples per metric, of
+which at least 7 have differing values, recording the actual count when fewer are available. When the
+values are equal, or rounding makes several paths match, no unique attribution is made. Metric name,
+number, and the sentence's own "today / 7-day average / last 7 days average" wording are cross-checked
+together; a keyword appearing is not taken as proof the basis is right, and no automatic gate is
+added.
 
-| 指标 | 7 日均值与当日值相等的天数占比 |
-|---|---:|
-| 呼吸率 | 51.3% |
-| 血氧 | 32.9% |
-| HRV | 2.3% |
+### Window analysis stays at window-level aggregation
 
-这些是特定样本、窗口和舍入方式下的描述，不是人群估计或校准依据；
-它们不参与 0.4 阈值设定，也不能仅凭相等比例推断指标的波动或可靠性。
-它们说明那次验收中，有些日子没有需要额外解释的数值差异，不保证换一批数据后比例不变。
-
-人工抽查按两值是否不同分层。每个指标最多 10 条，其中至少 7 条取两值不同的样本；
-样本不足时记录实际数量。两值相等或舍入后多路径命中时，不作唯一来源归属。
-需结合指标、数值与句子中“当日 / 7 日均值 / 近 7 天平均”的说明交叉核对，
-不把单纯关键词出现当作口径正确，也不新增自动门禁。
-
-### 区间分析保持窗口级聚合
-
-这次双口径改动只用于单日分析。window-v1 继续只发区间聚合，
-不增加逐日读数或数组，避免扩大数据出口；其字段结构及提示词协议保持原版本。
+The dual-basis change applies to single-day analysis only. `window-v1` continues to send range
+aggregates, adding no daily readings or arrays and so not widening the data egress; its field
+structure and prompt protocol stay at their original version.
