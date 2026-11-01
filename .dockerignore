@@ -1,0 +1,12 @@
+data/
+.venv/
+.uv-cache/
+.uv-python/
+research-openfit/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.git/
+docs/
+AGENTS.md
+docker-compose.yml

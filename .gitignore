@@ -1,0 +1,32 @@
+# runtime data (database, secret key, exports)
+data/
+
+# local database copies and secrets anywhere in the tree
+*.db
+*.db-wal
+*.db-shm
+.env
+.uv-cache/
+.uv-python/
+
+# research archive (large, kept on disk out of git)
+research-openfit/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# tests
+.pytest_cache/
+.coverage
+
+# misc
+.DS_Store
+*.log
+
+# development-only JavaScript parser
+node_modules/
