@@ -173,19 +173,11 @@ def available_dates(conn: sqlite3.Connection) -> list[str]:
     return [row["date"] for row in conn.execute("SELECT date FROM days ORDER BY date")]
 
 
-def count_metrics_for_date(conn: sqlite3.Connection, date: str) -> int:
-    """该日期已入库的指标条数（用作漂移检测的基线）。"""
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM daily_metrics WHERE date = ?", (date,)
-    ).fetchone()
-    return int(row["n"])
-
-
 def last_field_count(conn: sqlite3.Connection, date: str) -> int | None:
     """该日期最近一次同步实际解析出的字段数（漂移检测的基线）。
 
-    不能用 `count_metrics_for_date`：`daily_metrics` 在合并语义下只增不减，
-    拿累积行数当基线会让同一次漂移被无限重复报告，而且「上次是 N 项」会说谎。
+    基线取每次同步实际解析出的字段数，不取 `daily_metrics` 的累积行数：
+    合并语义下它只增不减，同一次漂移会被反复报告。
     老库（v3 之前）这一列是 NULL，返回 None 表示「没有可比基线」。
     """
     row = conn.execute(

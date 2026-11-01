@@ -43,11 +43,6 @@ def mean_sd(values: Iterable[float]) -> tuple[float | None, float | None]:
     return mean(items), (pstdev(items) if len(items) > 1 else 0.0)
 
 
-def median_or_none(values: Iterable[float]) -> float | None:
-    items = [v for v in values if v is not None]
-    return median(items) if items else None
-
-
 # ---------- 个人基线（全站唯一定义）----------
 #
 # 页面上一旦有两套「基线」，用户看到的两句结论就会互相冒充：一处说"比基线高 X"，
