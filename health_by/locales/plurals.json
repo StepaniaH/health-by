@@ -1,0 +1,255 @@
+{
+  "server.ai.service.normalize_window.f56540c45": [
+    "MAX_WINDOW_DAYS"
+  ],
+  "server.analysis._headline.5b8da7ebd": [
+    "p2"
+  ],
+  "server.analysis._baseline_body.1fd48a48d": [
+    "samples"
+  ],
+  "server.analysis._insights.94efde139": [
+    "p4"
+  ],
+  "server.api.app.sync.00b5cfc7d": [
+    "SYNC_MAX_DAYS"
+  ],
+  "server.cli.sync_cmd.7e132c539": [
+    "failed"
+  ],
+  "server.cli.sync_cmd.aa3f9ebf4": [
+    "p1"
+  ],
+  "server.cli.demo.9b730cd40": [
+    "p1"
+  ],
+  "server.cli.status.1c780c242": [
+    "p1"
+  ],
+  "server.cli.status.c32ceff36": [
+    "p1"
+  ],
+  "server.cli.status.d2002d7f4": [
+    "p1"
+  ],
+  "server.cli.export.0f6e05494": [
+    "p2",
+    "p3"
+  ],
+  "server.engine._autosync_dates.0c6a416ce": [
+    "gap_days",
+    "p3"
+  ],
+  "server.engine._run_batch.d55127406": [
+    "p1"
+  ],
+  "server.engine._run_batch.ae736fc32": [
+    "p1"
+  ],
+  "server.engine._sync_day_locked.269f45686": [
+    "total"
+  ],
+  "server.engine._sync_day_locked.1eff58b7e": [
+    "p2"
+  ],
+  "server.insights._facts.c3d984976": [
+    "p1"
+  ],
+  "server.insights._facts.7eddd966b": [
+    "p1"
+  ],
+  "server.insights._facts.3901996b4": [
+    "value"
+  ],
+  "server.insights._facts.32dda8e94": [
+    "archived",
+    "weakest"
+  ],
+  "server.insights._facts.a8ab2ddad": [
+    "p1",
+    "p3"
+  ],
+  "server.metrics.baseline_stats.3eff63c21": [
+    "BASELINE_MIN_SAMPLES"
+  ],
+  "web.ai.renderAI.ee98d4582": [
+    "p3"
+  ],
+  "web.charts.cosinorChart.30a40051c": [
+    "value"
+  ],
+  "web.charts.heatmapChart.e488cfb06": [
+    "value"
+  ],
+  "web.charts.timelineRibbon.23974cbad": [
+    "value"
+  ],
+  "web.dashboard.bindControls.f08f99eb0": [
+    "p1"
+  ],
+  "web.dashboard.watchSync.7192ab40d": [
+    "total"
+  ],
+  "web.dashboard.watchSync.185efb75e": [
+    "total"
+  ],
+  "web.dashboard.syncOutcome.75c2e0806": [
+    "p1"
+  ],
+  "web.dashboard.syncOutcome.71e5f2aaa": [
+    "p1"
+  ],
+  "web.dashboard.syncOutcome.bede02c65": [
+    "p1"
+  ],
+  "web.dashboard.showEmpty.eff81bd92": [
+    "p3"
+  ],
+  "web.dashboard.renderDataPage.d2d96ec04": [
+    "p3"
+  ],
+  "web.dashboard.renderDataPage.e493d478a": [
+    "p3"
+  ],
+  "web.dashboard.renderDataPage.417b6fe32": [
+    "p1"
+  ],
+  "web.dashboard.renderDataPage.554e3a2ca": [
+    "p3"
+  ],
+  "web.dashboard.renderDataPage.a51c7f2a2": [
+    "p3"
+  ],
+  "web.dashboard.renderBodyPage.951e6a5fe": [
+    "days"
+  ],
+  "web.dashboard.renderBodyPage.5a8a11d92": [
+    "days"
+  ],
+  "web.dashboard.renderHeartPage.7cb07a80e": [
+    "p1"
+  ],
+  "web.dashboard.renderHeartPage.9f44372b6": [
+    "p1"
+  ],
+  "web.dashboard.renderActivityPage.936e39ced": [
+    "p3"
+  ],
+  "web.dashboard.renderActivityPage.7f9d4a777": [
+    "p3"
+  ],
+  "web.dashboard.renderActivityPage.18f49ab72": [
+    "p2"
+  ],
+  "web.dashboard.renderActivityPage.7cb07a80e": [
+    "p1"
+  ],
+  "web.dashboard.renderActivityPage.7c018c7d7": [
+    "p1"
+  ],
+  "web.dashboard.renderActivityPage.e9ca3b649": [
+    "shortDays"
+  ],
+  "web.dashboard.renderActivityPage.dcd7e04df": [
+    "shortDays"
+  ],
+  "web.dashboard.renderActivityPage.e4df3f981": [
+    "p1",
+    "p2"
+  ],
+  "web.dashboard.renderActivityPage.e82f2306a": [
+    "p1"
+  ],
+  "web.dashboard.renderActivityPage.469eb56ea": [
+    "shortDays"
+  ],
+  "web.dashboard.renderActivityPage.a3bb0b826": [
+    "p1"
+  ],
+  "web.dashboard.renderSleepPage.7cb07a80e": [
+    "p1"
+  ],
+  "web.dashboard.renderSleepPage.6b416bd2b": [
+    "p1",
+    "recorded"
+  ],
+  "web.dashboard.renderSleepPage.861a20aa1": [
+    "recorded",
+    "p1"
+  ],
+  "web.dashboard.renderSleepPage.f6d80879e": [
+    "p1"
+  ],
+  "web.dashboard.renderSleepPage.2a69ca5ac": [
+    "p1",
+    "p3"
+  ],
+  "web.dashboard.relationsBlock.1ac706ef6": [
+    "p3"
+  ],
+  "web.dashboard.relationsBlock.d9c5f2e97": [
+    "p4"
+  ],
+  "web.dashboard.relationsBlock.15af8c94d": [
+    "p1"
+  ],
+  "web.dashboard.relationsBlock.c6c53ca8c": [
+    "p1"
+  ],
+  "web.dashboard.achievementsBlock.ce57c8e77": [
+    "p2"
+  ],
+  "web.dashboard.achievementsBlock.4bf6e2db3": [
+    "p2"
+  ],
+  "web.dashboard.trendBlock.c85c9f79a": [
+    "p2"
+  ],
+  "web.dashboard.renderToday.f3e4b5a1b": [
+    "p1"
+  ],
+  "web.dashboard.renderToday.9c75be2da": [
+    "p1"
+  ],
+  "web.dashboard.renderToday.3f9ee5b8e": [
+    "p1"
+  ],
+  "web.dashboard.renderToday.a9c5663e6": [
+    "p1"
+  ],
+  "web.dashboard.windowText.f6429626a": [
+    "days"
+  ],
+  "web.dashboard.baselineWindowText.f6429626a": [
+    "days"
+  ],
+  "web.dashboard.agoText.ace2d01fc": [
+    "p1"
+  ],
+  "web.dashboard.agoText.c430f0983": [
+    "hours"
+  ],
+  "web.dashboard.agoText.4ba0128b1": [
+    "mins"
+  ],
+  "web.settings.refresh.a7c4551b0": [
+    "p1"
+  ],
+  "coverage.missing.detail": [
+    "count"
+  ],
+  "coverage.missing.detail_more": [
+    "count"
+  ],
+  "activity.sentence.equal": [
+    "p1"
+  ],
+  "activity.sentence.short": [
+    "p1",
+    "p2"
+  ],
+  "activity.sentence.over": [
+    "p1",
+    "p2"
+  ]
+}
