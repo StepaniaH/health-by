@@ -2,7 +2,7 @@
 
 **A self-hosted dashboard for your own health data.** Sync from Google Health / Fitbit to your own
 machine, keep it long-term, and read it through statistics you can check yourself. No black-box
-health score, no diagnosis, no data leaving your box.
+health score or diagnosis. AI analysis is optional.
 
 - Demo mode works out of the box — no account, no credentials.
 - For real data, use your own Google Cloud project (BYO OAuth). Credentials and data stay local.
@@ -49,7 +49,7 @@ It binds to `127.0.0.1` only. For LAN or Tailscale access, change the bind addre
 Python 3.11+.
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e .
+python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m health_by.cli serve        # 127.0.0.1:39441 by default
 .venv/bin/python -m pytest                     # tests
 ```
@@ -142,7 +142,7 @@ To reproduce: start without credentials and the page shows a "Demo data" badge.
 | | |
 |---|---|
 | ![Activity](docs/screenshots/analysis-desktop.png) | ![Cardiovascular and correlations](docs/screenshots/insights-desktop.png) |
-| Activity and cardiovascular: today, trend, patterns | Correlations and coverage: the chart is data, the caption is the conclusion |
+| Activity and cardiovascular: today, trend, patterns | Cardiovascular: HRV, resting heart rate, and correlations |
 
 ![Mobile](docs/screenshots/dashboard-mobile.png)
 

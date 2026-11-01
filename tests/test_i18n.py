@@ -3,6 +3,9 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
 import re
+import shutil
+
+import pytest
 from pathlib import Path
 import subprocess
 import tempfile
@@ -84,6 +87,7 @@ def test_source_guards_distinguish_comments_from_literals_and_do_not_exempt_ui()
         assert good.returncode == 0, good.stdout
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="Browser module tests require Node.js")
 def test_browser_language_priority_parameters_plural_dates_and_text_safety():
     script = r'''
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
@@ -111,3 +115,71 @@ assert.equal(zh.duration(42),'42 分钟');
 '''
     result = subprocess.run(['node','-e',script],cwd=ROOT,text=True,capture_output=True,timeout=10)
     assert result.returncode == 0, result.stderr
+
+def test_complete_plural_variants_and_formatted_counts():
+    key = 'server.cli.status.c32ceff36'
+    with using_language('en'):
+        assert '1 day' in str(t(key, p1=1))
+        assert '2 days' in str(t(key, p1=2))
+        assert '1,234 days' in str(t(key, p1=1234))
+    with using_language('zh'):
+        assert '1,234' in str(t(key, p1=1234))
+
+
+def test_new_confirmation_token_is_independent_of_language(tmp_cfg):
+    from health_by.api.app import create_app
+    app = create_app(tmp_cfg)
+    try:
+        client = TestClient(app)
+        for lang in ('en','zh'):
+            assert client.post('/api/v1/data/clear', headers={'accept-language':lang},json={'confirm':'删除全部数据'}).status_code == 400
+            assert client.post('/api/v1/data/clear', headers={'accept-language':lang},json={'confirm':'DELETE ALL DATA'}).status_code == 200
+    finally:
+        app.state.engine.shutdown(); app.state.engine.close(); app.state.conn.close()
+
+
+def test_model_input_is_independent_of_ui_language():
+    from health_by.ai.service import build_payload, build_window_payload, payload_audit
+    from health_by.ai.prompt import build_messages
+    day = {'date':'2024-02-01', 'activity':{'steps':3456}, 'heart':{'hrv_ms':44.4}, 'sleep':{'total_minutes':431}}
+    snapshots = []
+    for lang in ('zh','en'):
+        with using_language(lang):
+            daily = build_payload(day, {}, {}, {}, today='2024-02-01',history=[day])
+            window = build_window_payload([day], {}, '2024-02-01','2024-02-02',today='2024-02-02')
+            snapshots.append((json.dumps(daily,ensure_ascii=False,sort_keys=True),payload_audit(window),build_messages(daily),build_messages(window)))
+    assert snapshots[0] == snapshots[1]
+
+
+def test_option_markers_survive_browser_option_parsing():
+    for name in ('index.html','settings.html'):
+        source = (ROOT/'health_by/web'/name).read_text()
+        assert not re.search(r'<option\b[^>]*>\s*<',source)
+    check = MarkupCheck();check.feed('<select><option><span data-i18n="key">中文</span></option></select>')
+    assert any('option element' in text for _,text in check.issues)
+
+
+@pytest.mark.parametrize('source,expected', [
+    ('const x = `${ok ? "yes" : "no"}`;', 'conditional fragment inside template literal'),
+    ('const x = `${"中文"}`;', 'unlocalized string literal'),
+    (r'const x = "\u4e2d";', 'unlocalized string literal'),
+    (r'const x = `\u{4e2d}`;', 'unlocalized string literal'),
+    ('const x = `${f({value:"中文"})}`;', 'unlocalized string literal'),
+    ('const x = `${value.toLocaleString("en-US")}`;', 'locale outside i18n module'),
+])
+def test_dependency_free_scanner_covers_interpolation_and_escapes(source, expected):
+    from check_i18n_js import scan
+    assert expected in {message for _,message in scan(source)}
+
+
+@pytest.mark.parametrize('source', [
+    '// 中文\nconst x = /[\\/中文]/;',
+    'function f(){ return /中文/; }',
+    'const x = `${ok ? 1 : 0}k`;',
+    'const x = `${value?.n ?? 0}`;',
+    'const x = `${t("label", {n:1})}`;',
+    r'const x = "\\u4e2d";',
+])
+def test_dependency_free_scanner_preserves_non_ui_text_and_numeric_expressions(source):
+    from check_i18n_js import scan
+    assert scan(source) == []
