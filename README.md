@@ -75,7 +75,7 @@ database — switch to the new variable after confirming your first deployment.
 A third party cannot talk to the band over Bluetooth; this is the only official path:
 
 ```
-Fitbit device → Bluetooth → Fitbit/Google app → cloud sync → Google Health API v4 → Health By
+Fitbit device → Bluetooth → Fitbit/Google app → cloud sync → Google Health API v4 → health·by
 ```
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/) and enable
