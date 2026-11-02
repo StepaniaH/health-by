@@ -25,7 +25,7 @@ from .. import __version__, analysis, insights as insights_module, metrics, reli
 from ..ai.client import AIError
 from ..ai.service import AIService
 from ..config import Config
-from ..coverage import raw_coverage
+from ..coverage import index_raw_dates, raw_coverage
 from ..db import connect, migrate
 from ..engine import Engine
 from ..insights import build_insights
@@ -127,6 +127,8 @@ def create_app(cfg: Config) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         bootstrap()
+        # 覆盖度索引在启动时补建一次：解析原始载荷很慢，不能让第一个请求来承担。
+        index_raw_dates(conn)
         stop_event = threading.Event()
         settings = storage.load_settings(conn)
         if int(settings.get("sync_interval_minutes") or 0) > 0:

@@ -70,8 +70,11 @@
 
 ## Database
 
-Tables: `meta` / `settings` / `credentials` / `days` / `daily_metrics` / `raw_days` / `sync_runs` /
-`oauth_states` / `ai_analyses` / `ai_egress`.
+Tables: `meta` / `settings` / `credentials` / `days` / `daily_metrics` / `raw_days` / `raw_measure_dates` /
+`sync_runs` / `oauth_states` / `ai_analyses` / `ai_egress`.
+
+`raw_measure_dates` indexes the measurement dates embedded in each archived payload, so a coverage
+check is a table lookup instead of re-parsing every payload.
 
 A schema change means appending a new version block to `MIGRATIONS` in `db.py` and incrementing
 `SCHEMA_VERSION`; published fields are never changed destructively.

@@ -12,7 +12,7 @@ import sqlite3
 import logging
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 MIGRATIONS: list[tuple[int, str]] = [
     (
@@ -147,6 +147,17 @@ MIGRATIONS: list[tuple[int, str]] = [
             (SELECT payload_schema_version FROM ai_analyses WHERE id = ai_egress.analysis_id);
         CREATE INDEX idx_ai_schema_cache ON ai_analyses
             (start_date, end_date, model, prompt_version, payload_schema_version, base_url, status, id);
+        """,
+    ),
+    (
+        8,
+        """
+        CREATE TABLE IF NOT EXISTS raw_measure_dates (
+            raw_date     TEXT NOT NULL,
+            measure_date TEXT NOT NULL,
+            PRIMARY KEY (raw_date, measure_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_raw_measure_dates ON raw_measure_dates (measure_date);
         """,
     ),
 

@@ -157,6 +157,15 @@ def store_day(conn: sqlite3.Connection, day: DaySnapshot, raw: RawDay) -> None:
             "INSERT OR REPLACE INTO raw_days (date, source, fetched_at, payload) VALUES (?, ?, ?, ?)",
             (day.date, raw.source, raw.generated_at, json.dumps(payload, ensure_ascii=False)),
         )
+        # 测量日期在写入时就地索引，读取覆盖度时不必再解析整份载荷。
+        from .coverage import forget_raw_dates, measure_dates
+
+        forget_raw_dates(conn, day.date)
+        for measured in measure_dates(payload):
+            conn.execute(
+                "INSERT OR IGNORE INTO raw_measure_dates (raw_date, measure_date) VALUES (?, ?)",
+                (day.date, measured),
+            )
 
 
 def get_day(conn: sqlite3.Connection, date: str) -> dict | None:
