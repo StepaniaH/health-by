@@ -12,6 +12,16 @@ User-visible changes, newest first. The format follows [Keep a Changelog](https:
 - Local development data is now built by `devtools/make_dev_data.py`, which stays outside the packaged
   module. See `CONTRIBUTING.md`.
 
+## [0.0.3] - 2026-11-03
+
+### Changed
+
+- The demo data source is gone: no settings switch, no `demo` command, no seed endpoint, and a new
+  installation starts empty. A local dataset with the same shape as a real library is built by
+  `devtools/make_dev_data.py`, which is not part of the published package.
+- The layout, the interface and the screenshots were rebuilt on that dataset.
+- A missing browser suite no longer passes silently in CI.
+
 ## [0.0.2] - 2026-11-02
 
 First release with the current interface and data contract. Fixes for paths that failed silently:
