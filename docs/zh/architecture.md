@@ -6,7 +6,7 @@
 
 - **自托管优先**：数据只存本机 SQLite；零遥测；默认只绑 `127.0.0.1`。
 - **单一内部契约**：视图与分析不依赖任何远程 API 形状（数据源可替换）。
-- **演示优先**：无凭据即可运行、测试、评审 UI。
+- **本地合成数据**：`devtools/` 生成与真实数据同形状的库，无凭据即可开发与评审 UI。
 - **克制**：不做诊断、不做复合评分；每个结论可追溯到测量值、用户目标或可见个人基线。
 
 ## 数据流
@@ -44,7 +44,6 @@
 | `health_by/models.py` | `DaySnapshot` 契约 + 指标提取 |
 | `health_by/storage.py` | days / daily_metrics / raw_days / sync_runs / settings 读写 |
 | `health_by/providers/base.py` | 数据源契约（fetch_raw / translate / OAuth 可选方法） |
-| `health_by/providers/demo.py` | 演示数据：合成 GHA 形状载荷，走同一翻译管线 |
 | `health_by/providers/google_health/` | 真实数据源：OAuth（PKCE）+ 任务注册表 + 抓取 + 翻译 |
 | `health_by/engine.py` | 同步引擎：共享限速、令牌轮换原子写回、队列 + 并发 worker、自动同步线程 |
 | `health_by/analysis.py` | 基线对比 / 周期差值 / 覆盖与新鲜度 / 规则化洞察 |
@@ -52,7 +51,8 @@
 | `health_by/insights.py` | 恢复、负荷、节律、关联、周报与汇总表（仅本地存档） |
 | `health_by/api/app.py` | FastAPI 工厂：JSON API（含 `/api/v1/insights`）+ OAuth 路由 + 静态页 |
 | `health_by/web/` | 零构建前端（原生 ES modules + 手写 SVG 图表） |
-| `health_by/cli.py` | Click CLI：serve / sync / demo / status / export / db（stats、check、vacuum） |
+| `health_by/cli.py` | Click CLI：serve / sync / status / export / db（stats、check、vacuum） |
+| `devtools/` | 本地开发用的合成生成器，不随包发布 |
 
 ## 安全边界
 
@@ -72,7 +72,7 @@ Schema 变更 = `db.py` 的 `MIGRATIONS` 追加新版本块 + `SCHEMA_VERSION` �
 
 以下几点决定了很多模块的形状，理由一并写在这里：
 
-- **demo = 合成 GHA 载荷 → 真实翻译管线**：演示数据和真实数据走同一条代码路径，杜绝"两条腿"；
+- **单一翻译管线**：开发生成器产出 GHA 形状载荷，与真实数据走同一套翻译代码，杜绝"两条腿"；
 - **部分失败容忍**：31 个任务独立执行，单个失败不取消其余；覆盖情况进 UI；
 - **401 语义统一**：任何 401 都视为"需要重新连接"（对应 Google 测试模式 7 天令牌政策）；
 - **原始留档**：每天原始载荷留档，将来可重新翻译/补算新指标，无需重新拉取。

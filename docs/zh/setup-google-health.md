@@ -2,7 +2,7 @@
 
 [English](../setup-google-health.md)
 
-> 目标：让 health-by 从「演示数据」切到真实 Fitbit / Google Health 数据。
+> 目标：接入 Google Cloud 项目，同步真实的 Fitbit / Google Health 数据。
 > 模式：**BYO（自带 GCP 项目）**——每个部署者使用自己的 OAuth 客户端，规避 Google Restricted scope 的公开分发审查。
 
 ## 前置检查（S0）

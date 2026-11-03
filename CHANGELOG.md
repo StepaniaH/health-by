@@ -2,6 +2,16 @@
 
 User-visible changes, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **Demo data is gone from the product.** The settings page no longer offers a data source choice,
+  there is no seeding endpoint, no automatic seeding on first start, and no `demo` CLI command. A new
+  install starts empty and syncs from Google Health once credentials are set.
+- Local development data is now built by `devtools/make_dev_data.py`, which stays outside the packaged
+  module. See `CONTRIBUTING.md`.
+
 ## [0.0.2] - 2026-11-02
 
 First release with the current interface and data contract. Fixes for paths that failed silently:

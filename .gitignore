@@ -1,6 +1,9 @@
 # runtime data (database, secret key, exports)
 data/
 
+# local development database built by devtools/make_dev_data.py
+dev-data/
+
 # local database copies and secrets anywhere in the tree
 *.db
 *.db-wal
