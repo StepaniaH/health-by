@@ -7,7 +7,11 @@ health score or diagnosis. AI analysis is optional.
 - Demo mode works out of the box — no account, no credentials.
 - For real data, use your own Google Cloud project (BYO OAuth). Credentials and data stay local.
 
-> Status: `v0.0.1` — MVP plus a layered analysis dashboard. APIs and pages are still moving; feedback welcome.
+[![Docker Pulls](https://img.shields.io/docker/pulls/stepaniah/health-by)](https://hub.docker.com/r/stepaniah/health-by)
+[![GitHub release](https://img.shields.io/github/v/tag/StepaniaH/health-by?label=version)](https://github.com/StepaniaH/health-by/tags)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+> Status: `v0.0.2` — MVP plus a layered analysis dashboard. APIs and pages are still moving; feedback welcome.
 
 ![Dashboard](docs/screenshots/dashboard-desktop.png)
 
@@ -35,14 +39,29 @@ To reproduce: start without credentials and the page shows a "Demo data" badge.<
 
 ### Docker (recommended)
 
-```bash
-git clone <repo-url> && cd health-by
-docker compose up -d --build
-# open http://127.0.0.1:39441 — demo mode is ready
+```yaml
+services:
+  health-by:
+    image: stepaniah/health-by:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:39441:39441"
+    volumes:
+      - ./data:/data
+    user: "1000:1000"
 ```
 
-It binds to `127.0.0.1` only. For LAN or Tailscale access, change the bind address in
-`docker-compose.yml`. **Do not expose the port to the public internet.**
+```sh
+mkdir -p data
+docker compose up -d
+```
+
+Open `http://127.0.0.1:39441`; demo data is ready without credentials.
+
+`user` is your own UID and GID (`id -u`, `id -g`); `./data` must be writable by it.
+The image is also published to `ghcr.io/stepaniah/health-by`. For LAN or Tailscale access,
+change the left-hand side of the port mapping — never expose the port to the public internet.
+Building from a checkout instead? Replace `image:` with `build: .`.
 
 ### Run locally
 

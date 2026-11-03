@@ -15,9 +15,11 @@ def run(data_dir, *args):
 
 
 def test_version():
+    from health_by import __version__
+
     result = CliRunner().invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "0.0.1" in result.output
+    assert __version__ in result.output
 
 
 def test_demo_then_status(tmp_path):

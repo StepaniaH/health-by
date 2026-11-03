@@ -1,10 +1,11 @@
 # Changelog
 
-User-visible changes, newest first.
+User-visible changes, newest first. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.0.2] - 2026-11-02
 
-Fixes for paths that failed silently: nothing raised an error, the numbers were just wrong.
+First release with the current interface and data contract. Fixes for paths that failed silently:
+nothing raised an error, the numbers were just wrong.
 
 ### Fixed
 
@@ -36,7 +37,7 @@ Fixes for paths that failed silently: nothing raised an error, the numbers were 
 - Optional BYOK analysis through any OpenAI-compatible endpoint, with an explicit outbound allow-list,
   per-request audit rows, and one repair attempt on validation failure.
 
-## v0.0.1 — 2026-10-30
+## [0.0.1] - 2026-10-30
 
 First public release: a self-hosted dashboard that syncs Google Health / Fitbit data to your own
 machine and keeps it.

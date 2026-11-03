@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "health-by"
-version = "0.0.1"
+version = "0.0.2"
 description = "Self-hosted fitness data service: sync, store, analyze and display Fitbit / Google Health data. Web + CLI."
 readme = "README.md"
 requires-python = ">=3.11"
