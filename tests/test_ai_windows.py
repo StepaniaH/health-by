@@ -82,8 +82,8 @@ def test_window_whitelist_drops_private_and_future_fields_and_outside_dates():
 
 
 @pytest.fixture
-def window_api(tmp_cfg, monkeypatch):
-    app = create_app(tmp_cfg)
+def window_api(synthetic_cfg, monkeypatch):
+    app = create_app(synthetic_cfg)
     api = TestClient(app)
     api.post('/api/v1/settings/ai', json={'ai_enabled': True, 'ai_base_url': 'https://opencode.ai/zen/go/v1',
                                       'ai_model': 'window-model', 'api_key': 'synthetic-key'})

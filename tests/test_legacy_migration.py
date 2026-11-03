@@ -12,7 +12,7 @@ from health_by import db, storage
 from health_by.api.app import create_app
 from health_by.config import load_config
 from health_by.legacy import DB_NAME, LEGACY_DB_NAME, migrate_legacy_database
-from devtools.gen_demo_data import DemoProvider
+from devtools.gen_demo_data import SyntheticProvider
 from health_by.secrets import SecretStore
 
 
@@ -28,7 +28,7 @@ def legacy_data(directory):
     old = directory / LEGACY_DB_NAME
     with closing(db.connect(old)) as conn:
         db.migrate(conn)
-        provider = DemoProvider()
+        provider = SyntheticProvider()
         raw = provider.fetch_raw('2026-10-25')
         storage.store_day(conn, provider.translate(raw), raw)
         storage.set_setting(conn, 'goals', {'steps': 8765, 'sleep_minutes': 470})

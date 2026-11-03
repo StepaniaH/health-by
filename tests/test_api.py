@@ -1,4 +1,4 @@
-"""HTTP API 测试（TestClient，演示数据源，完全离线）。"""
+"""HTTP API 测试（TestClient，合成测试数据源，完全离线）。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ DAY = "2026-06-15"
 
 
 @pytest.fixture
-def app(tmp_cfg):
-    application = create_app(tmp_cfg)
+def app(synthetic_cfg):
+    application = create_app(synthetic_cfg)
     yield application
     application.state.engine.shutdown()
     application.state.engine.close()
@@ -26,7 +26,7 @@ def app(tmp_cfg):
 
 @pytest.fixture
 def client(app):
-    # 不使用上下文管理器 → 不触发 lifespan（不自动播种），由测试自行准备数据
+    # 数据由测试显式同步；启动行为另用 lifespan 测试覆盖。
     return TestClient(app)
 
 
@@ -43,9 +43,40 @@ def test_health(client):
     assert payload["version"]
 
 
+def test_fresh_product_startup_has_only_google_source_and_no_generated_data(
+    tmp_cfg, product_provider_defaults, monkeypatch,
+):
+    from health_by.providers import available_providers, get_provider
+
+    assert product_provider_defaults == "google-health"
+    assert available_providers() == ["google-health"]
+
+    def unexpected_fetch(*args, **kwargs):
+        pytest.fail("Opening an empty dashboard must not fetch or generate data")
+
+    monkeypatch.setattr(get_provider("google-health"), "fetch_raw", unexpected_fetch)
+    application = create_app(tmp_cfg)
+    assert storage.get_setting(application.state.conn, "provider") is None
+    with TestClient(application) as api:
+        status = api.get("/api/v1/status").json()
+        assert status["provider"]["provider"] == "google-health"
+        assert status["days_stored"] == 0
+        assert status["latest_date"] is None
+        assert api.get("/api/v1/settings").json()["provider"] == "google-health"
+        assert api.get("/api/v1/summary").status_code == 404
+        assert api.post("/api/v1/demo/seed", json={"days": 30}).status_code == 404
+        assert api.post("/api/v1/settings", json={"provider": "demo"}).status_code == 400
+        assert storage.count_days(application.state.conn) == 0
+        for lang in ("zh", "en"):
+            settings = api.get(f"/settings?lang={lang}").text
+            assert 'id="gh-client-id"' in settings
+            for retired in ('id="provider-row"', 'id="save-provider"', 'id="seed-demo"', 'id="demo-note"'):
+                assert retired not in settings
+
+
 def test_status_reports_the_configured_source(client):
     payload = client.get("/api/v1/status").json()
-    assert payload["provider"]["provider"] == "google-health"
+    assert payload["provider"]["provider"] == "synthetic"
     assert payload["goals"]["steps"] == 8000
 
 
@@ -139,7 +170,7 @@ def test_summary_and_insights_use_the_same_full_baseline_but_keep_short_chart_tr
     for index in range(30):
         day = DaySnapshot(
             shift_iso(DAY, index - 29),
-            "demo",
+            "synthetic",
             "2026-06-15T00:00:00Z",
             heart=HeartDay(
                 resting_hr=60 if index < 16 else (40 if index % 2 == 0 else 80),
@@ -322,7 +353,7 @@ def test_settings_update_and_validation(client):
 
 def test_provider_switch_rejects_unknown_and_accepts_known(client):
     assert client.post("/api/v1/settings", json={"provider": "google-health"}).json()["provider"] == "google-health"
-    assert client.post("/api/v1/settings", json={"provider": "demo"}).status_code == 400
+    assert client.post("/api/v1/settings", json={"provider": "unsupported-source"}).status_code == 400
 
 
 def test_credentials_masked_in_settings(client):

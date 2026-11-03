@@ -20,8 +20,8 @@ KEY = "sk-test-DO-NOT-LEAK"
 
 
 @pytest.fixture
-def ai_app(tmp_cfg):
-    app = create_app(tmp_cfg)
+def ai_app(synthetic_cfg):
+    app = create_app(synthetic_cfg)
     yield app
     app.state.engine.shutdown()
     app.state.engine.close()
@@ -97,7 +97,7 @@ def test_generation_cache_force_model_version_and_request_privacy(ai_app, api, m
         body = json.loads(request.content)
         requests.append(body)
         assert KEY not in request.content.decode()
-        assert "演示用户" not in request.content.decode() and "demo-tracker" not in request.content.decode()
+        assert "Synthetic user" not in request.content.decode() and "synthetic-tracker" not in request.content.decode()
         data = json.loads(body["messages"][1]["content"].split("\n", 1)[1].rsplit("\n", 1)[0])
         assert data["date"] == "D-0"
         assert "steps_intraday" not in json.dumps(data)

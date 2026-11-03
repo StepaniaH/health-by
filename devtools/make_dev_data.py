@@ -20,13 +20,13 @@ from health_by.engine import Engine
 from health_by.providers import PROVIDERS, ensure_builtin_providers
 from health_by.util import iso_range, iso_today
 
-from devtools.gen_demo_data import DemoProvider
+from devtools.gen_demo_data import SyntheticProvider
 
 
 def build(out_dir: Path, days: int) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     ensure_builtin_providers()
-    PROVIDERS["synthetic"] = DemoProvider()
+    PROVIDERS["synthetic"] = SyntheticProvider()
 
     cfg = Config(data_dir=out_dir)
     conn = db.connect(cfg.db_path)
