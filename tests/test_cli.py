@@ -22,21 +22,6 @@ def test_version():
     assert __version__ in result.output
 
 
-def test_demo_then_status(tmp_path):
-    data_dir = tmp_path / "data"
-    result = run(data_dir, "demo", "--days", "3")
-    assert result.exit_code == 0, result.output
-    assert "已生成 3 天演示数据" in result.output
-
-    result = run(data_dir, "status")
-    assert result.exit_code == 0, result.output
-    assert "存储天数:3" in result.output
-    assert "原始覆盖 16 天" in result.output  # 三天演示载荷各含十四天滚动窗口。
-    assert "归一化 3 天" in result.output
-    assert "缺口 13 天" in result.output
-    assert "演示数据" in result.output
-
-
 def test_sync_specific_date(tmp_path):
     data_dir = tmp_path / "data"
     result = run(data_dir, "sync", "--date", "2026-06-15")
@@ -61,28 +46,41 @@ def test_export_writes_json(tmp_path):
 def test_help_lists_commands():
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
-    for command in ("serve", "sync", "demo", "status", "export"):
+    for command in ("serve", "sync", "status", "export", "db"):
         assert command in result.output
 
 
-def _patch_provider(monkeypatch, factory):
+def _patch_provider(monkeypatch, factory, data_dir=None):
+    """把一个合成数据源注册成 `synthetic`，并把它设为当前数据源。
+
+    产品里没有内置演示数据；这份数据只存在于测试里。
+    """
+    import os
+    from health_by import db as db_module, storage
+    from health_by.config import load_config
     from health_by.providers import PROVIDERS, ensure_builtin_providers
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", factory())
+    monkeypatch.setitem(PROVIDERS, "synthetic", factory())
+    if data_dir is not None:
+        monkeypatch.setenv("HEALTH_BY_DATA", str(data_dir))
+        conn = db_module.connect(load_config().db_path)
+        db_module.migrate(conn)
+        storage.set_setting(conn, "provider", "synthetic")
+        conn.close()
 
 
 def test_sync_exit_code_is_truthful_when_a_day_errors(tmp_path, monkeypatch):
     """脚本用户靠退出码判断成败：有的一天彻底失败时必须非零。"""
     from health_by.providers.base import ProviderError
-    from health_by.providers.demo import DemoProvider
+    from devtools.gen_demo_data import DemoProvider
 
     class AlwaysFails(DemoProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             raise ProviderError("上游 500")
 
-    _patch_provider(monkeypatch, AlwaysFails)
     data_dir = tmp_path / "data"
+    _patch_provider(monkeypatch, AlwaysFails, data_dir)
     result = run(data_dir, "sync", "--date", "2026-06-15")
     assert "x " in result.output
     assert result.exit_code == 1, f"有一天失败却返回 {result.exit_code}：{result.output}"
@@ -94,7 +92,7 @@ def test_sync_partial_day_is_labelled_not_reported_as_plain_failure(tmp_path, mo
     这一条同时守住一个回归：`partial` 状态没有 `error` 字段，
     以前会打印成「x  日期 None」。
     """
-    from health_by.providers.demo import DemoProvider
+    from devtools.gen_demo_data import DemoProvider
 
     base = DemoProvider()
 
@@ -106,8 +104,8 @@ def test_sync_partial_day_is_labelled_not_reported_as_plain_failure(tmp_path, mo
             raw.stats = {"total": total, "succeeded": total - 1}
             return raw
 
-    _patch_provider(monkeypatch, PartlyBroken)
     data_dir = tmp_path / "data"
+    _patch_provider(monkeypatch, PartlyBroken, data_dir)
     result = run(data_dir, "sync", "--date", "2026-06-15")
     assert "2026-06-15" in result.output
     assert "None" not in result.output, f"不该打印 error=None：{result.output}"

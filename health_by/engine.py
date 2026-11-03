@@ -83,7 +83,7 @@ class Engine:
             self._pending.clear()
 
     def provider_name(self, conn: sqlite3.Connection | None = None) -> str:
-        return str(storage.get_setting(conn or self.conn, "provider", "demo"))
+        return str(storage.get_setting(conn or self.conn, "provider", "google-health"))
 
     # ---------- 凭据 ----------
 
@@ -466,7 +466,7 @@ class Engine:
         interval = int(settings.get("sync_interval_minutes") or 0)
         if interval <= 0:
             return None
-        name = str(settings.get("provider") or "demo")
+        name = str(settings.get("provider") or "google-health")
         provider = get_provider(name)
         if provider.auth_kind == "oauth":
             credentials = self.credentials_for(name)

@@ -12,7 +12,7 @@ from health_by.engine import Engine
 from health_by.models import DaySnapshot
 from health_by.providers import PROVIDERS, ensure_builtin_providers
 from health_by.providers.base import Provider, ProviderAuthError, ProviderError
-from health_by.providers.demo import DemoProvider
+from devtools.gen_demo_data import DemoProvider
 from health_by.util import iso_today, shift_iso
 
 DAY = "2026-10-15"

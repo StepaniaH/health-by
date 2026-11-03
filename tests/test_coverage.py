@@ -3,7 +3,7 @@
 import json
 
 from health_by.coverage import raw_coverage
-from health_by.providers._sample import civil_date
+from devtools.sample_payload import civil_date
 from health_by.util import shift_iso
 
 

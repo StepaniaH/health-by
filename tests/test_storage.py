@@ -9,7 +9,7 @@ import pytest
 from health_by import storage
 from health_by.models import ActivityDay, DaySnapshot
 from health_by.providers.base import RawDay
-from health_by.providers.demo import DemoProvider
+from devtools.gen_demo_data import DemoProvider
 from health_by.util import shift_iso
 
 DAY = "2026-10-15"

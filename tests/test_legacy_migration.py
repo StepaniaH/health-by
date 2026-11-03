@@ -12,7 +12,7 @@ from health_by import db, storage
 from health_by.api.app import create_app
 from health_by.config import load_config
 from health_by.legacy import DB_NAME, LEGACY_DB_NAME, migrate_legacy_database
-from health_by.providers.demo import DemoProvider
+from devtools.gen_demo_data import DemoProvider
 from health_by.secrets import SecretStore
 
 

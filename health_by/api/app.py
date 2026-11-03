@@ -17,7 +17,7 @@ from urllib.parse import quote
 from functools import wraps
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.routing import APIRoute
-from health_by.i18n import localize, localize_demo_day, using_language, language
+from health_by.i18n import localize, using_language, language
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -44,7 +44,6 @@ class LocalizedRoute(APIRoute):
         super().__init__(*args, **kwargs)
 
 
-DEMO_SEED_DAYS = 30
 # 趋势窗口的唯一权威定义在 insights 层（它需要回显给前端），这里只引用。
 SUMMARY_TREND_DAYS = insights_module.SUMMARY_TREND_DAYS
 OAUTH_STATE_TTL_SECONDS = 15 * 60
@@ -115,18 +114,8 @@ def create_app(cfg: Config) -> FastAPI:
                 coverage_signature = signature
             return coverage_cache
 
-    def bootstrap() -> None:
-        """首次启动：演示模式自动准备最近 30 天数据（零配置体验）。"""
-        settings = storage.load_settings(conn)
-        if settings.get("provider") != "demo":
-            return
-        if storage.count_days(conn) > 0:
-            return
-        engine.sync_days(iso_range(iso_today(), DEMO_SEED_DAYS))
-
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        bootstrap()
         # 覆盖度索引在启动时补建一次：解析原始载荷很慢，不能让第一个请求来承担。
         index_raw_dates(conn)
         stop_event = threading.Event()
@@ -201,7 +190,7 @@ def create_app(cfg: Config) -> FastAPI:
         day = storage.get_day(conn, selected)
         if day is None:
             raise HTTPException(status_code=404, detail=t('server.api.app.summary.88f07f765', selected=selected))
-        day = localize_demo_day(_derive_activity(day))
+        day = _derive_activity(day)
         day = {**day, "coverage": {**(day.get("coverage") or {}), **coverage_snapshot()}}
         settings = storage.load_settings(conn)
         # 分析需要选中日之前的完整基线窗口；图表仍保留原来的短窗口。
@@ -316,26 +305,6 @@ def create_app(cfg: Config) -> FastAPI:
     def sync_runs(limit: int = 10) -> dict:
         return {"runs": storage.list_sync_runs(conn, limit=max(1, min(50, limit)))}
 
-    @app.post("/api/v1/demo/seed")
-    def demo_seed(payload: dict | None = None) -> dict:
-        body = payload or {}
-        raw_days = body.get("days")
-        # 不能写 `body.get("days") or DEMO_SEED_DAYS`：0 是 falsy，会被静默当成「没传」
-        # 而落回默认值，于是 days=0 反而 200 成功。
-        days = DEMO_SEED_DAYS if raw_days is None else int(raw_days)
-        if days < 1 or days > DEMO_SEED_DAYS:
-            raise HTTPException(status_code=400, detail=t('server.api.app.demo_seed.584c9fbc3', DEMO_SEED_DAYS=DEMO_SEED_DAYS))
-        # 同步已改为排队语义（已有任务在跑也接受），原处的 409 永远不可能触发，
-        # 于是把排队情况如实回报，让调用方知道是立即开始还是接在别人后面。
-        job = engine.start_background(iso_range(iso_today(), days))
-        return {
-            "started": True,
-            "days": days,
-            "added": job.get("added", 0),
-            "outstanding": job["outstanding"],
-            "workers": job["workers"],
-        }
-
     # ---------- 设置 ----------
 
     def settings_payload() -> dict:
@@ -358,7 +327,6 @@ def create_app(cfg: Config) -> FastAPI:
                 "has_client_secret": bool(credentials.get("client_secret")),
                 "redirect_uri": credentials.get("redirect_uri") or default_redirect_uri,
             },
-            "demo": {"active": settings.get("provider") == "demo", "days_stored": storage.count_days(conn)},
             "ai": ai_service.public_settings(conn),
         }
 

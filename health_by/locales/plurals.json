@@ -20,9 +20,6 @@
   "server.cli.sync_cmd.aa3f9ebf4": [
     "p1"
   ],
-  "server.cli.demo.9b730cd40": [
-    "p1"
-  ],
   "server.cli.status.1c780c242": [
     "p1"
   ],
@@ -231,9 +228,6 @@
   ],
   "web.dashboard.agoText.4ba0128b1": [
     "mins"
-  ],
-  "web.settings.refresh.a7c4551b0": [
-    "p1"
   ],
   "coverage.missing.detail": [
     "count"

@@ -21,3 +21,17 @@ def conn(tmp_cfg):
     db_module.migrate(connection)
     yield connection
     connection.close()
+
+
+@pytest.fixture
+def synthetic_provider(tmp_cfg, monkeypatch):
+    """把合成数据源注册进 PROVIDERS，供需要"有数据"的用例使用。
+
+    产品里没有演示数据这个概念；这份数据只在测试里存在。
+    """
+    from health_by.providers import PROVIDERS, ensure_builtin_providers
+    from devtools.gen_demo_data import DemoProvider
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", DemoProvider())
+    return "synthetic"

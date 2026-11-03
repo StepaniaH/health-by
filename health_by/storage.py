@@ -12,7 +12,7 @@ from .providers.base import RawDay
 from .util import shift_iso, utc_now_iso
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "provider": "demo",
+    "provider": "google-health",
     "goals": {"steps": 8000, "sleep_minutes": 480},
     "sync_interval_minutes": 360,
     "ai_enabled": False,

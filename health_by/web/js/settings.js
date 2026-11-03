@@ -85,11 +85,6 @@ function chip(text, klass = "") {
   return span;
 }
 
-function selectedProvider() {
-  const checked = document.querySelector('input[name="provider"]:checked');
-  return checked ? checked.value : "demo";
-}
-
 function updateSleepHours() {
   const value = Number($("goal-sleep").value || 0);
   $("goal-sleep-hours").textContent = value > 0 ? t("web.settings.updateSleepHours.1e2023b22", {p1: Math.floor(value / 60), p2: value % 60}) : "—";
@@ -99,10 +94,6 @@ function updateSleepHours() {
 
 async function refresh() {
   const settings = await get("/settings");
-  document.querySelectorAll('input[name="provider"]').forEach((radio) => {
-    radio.checked = radio.value === settings.provider;
-  });
-
   const gh = settings.google_health;
   $("gh-client-id").value = gh.client_id || "";
   $("gh-client-secret").value = "";
@@ -136,11 +127,6 @@ async function refresh() {
   updateAIButtons();
   $("ai-settings-note").textContent = (ai.enabled ? (ai.has_api_key ? t("web.settings.refresh.a990f2327", {}) : t("web.settings.refresh.bf90960d4", {})) : (ai.has_api_key ? t("web.settings.refresh.c2147e5dc", {}) : t("web.settings.refresh.151ddca74", {})));
   updateAIDisclosure();
-
-  $("demo-note").hidden = !settings.demo.active;
-  $("demo-note").textContent = settings.demo.active
-    ? t("web.settings.refresh.a7c4551b0", {p1: settings.demo.days_stored})
-    : t("web.settings.refresh.677c1db9e");
 
   $("about").textContent = `Health By v${settings.version || ""}`;
 
@@ -294,16 +280,6 @@ async function syncNow() {
   }
 }
 
-async function seedDemo() {
-  try {
-    await post("/demo/seed");
-    toast(t("web.settings.seedDemo.24882472f"));
-    pollSync();
-  } catch (error) {
-    toast(error.message, true);
-  }
-}
-
 async function clearData() {
   const confirmText = $("clear-confirm").value.trim();
   if (confirmText !== "DELETE ALL DATA") {
@@ -346,7 +322,6 @@ function bind() {
   $("ai-save").addEventListener("click", () => saveAI());
   $("ai-test").addEventListener("click", testAIConnection);
   $("ai-clear-key").addEventListener("click", () => saveAI(true));
-  $("save-provider").addEventListener("click", () => save({ provider: selectedProvider() }, t("web.settings.bind.9f8daadb2")));
   $("save-credentials").addEventListener("click", saveCredentials);
   $("connect-gh").addEventListener("click", () => { window.location.href = "/oauth/start"; });
   $("disconnect-gh").addEventListener("click", disconnect);
@@ -356,7 +331,6 @@ function bind() {
   $("goal-sleep").addEventListener("input", updateSleepHours);
   $("save-sync").addEventListener("click", () => save({ sync_interval_minutes: Number($("sync-interval").value) }, t("web.settings.bind.9a0e4c03c")));
   $("sync-now").addEventListener("click", syncNow);
-  $("seed-demo").addEventListener("click", seedDemo);
   $("clear-data").addEventListener("click", clearData);
 }
 

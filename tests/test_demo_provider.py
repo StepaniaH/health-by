@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from health_by.providers.demo import DemoProvider, WINDOW_DAYS
+from devtools.gen_demo_data import DemoProvider, WINDOW_DAYS
 from health_by.insights import pearson
 from health_by.util import iso_range, shift_iso
 

@@ -43,16 +43,15 @@ def test_health(client):
     assert payload["version"]
 
 
-def test_status_defaults_to_demo(client):
+def test_status_reports_the_configured_source(client):
     payload = client.get("/api/v1/status").json()
-    assert payload["provider"]["provider"] == "demo"
-    assert payload["provider"]["auth_kind"] == "none"
+    assert payload["provider"]["provider"] == "google-health"
     assert payload["goals"]["steps"] == 8000
 
 
 def test_coverage_api_is_read_only_and_uses_embedded_dates(app, client):
     import json
-    from health_by.providers._sample import civil_date
+    from devtools.sample_payload import civil_date
 
     app.state.conn.execute("INSERT INTO raw_days VALUES (?, 'synthetic', '', ?)", (DAY, json.dumps({
         "hrvRaw": {"dataPoints": [{"dailyHeartRateVariability": {"date": civil_date(shift_iso(DAY, -1))}}]},
@@ -66,7 +65,7 @@ def test_coverage_cache_refreshes_after_local_and_other_connection_writes(app, c
     import importlib
     import json
     from health_by.db import connect
-    from health_by.providers._sample import civil_date
+    from devtools.sample_payload import civil_date
 
     api = importlib.import_module("health_by.api.app")
     original = api.raw_coverage
@@ -321,9 +320,9 @@ def test_settings_update_and_validation(client):
     assert client.post("/api/v1/settings", json={"provider": "nope"}).status_code == 400
 
 
-def test_provider_switch(client):
+def test_provider_switch_rejects_unknown_and_accepts_known(client):
     assert client.post("/api/v1/settings", json={"provider": "google-health"}).json()["provider"] == "google-health"
-    assert client.post("/api/v1/settings", json={"provider": "demo"}).json()["provider"] == "demo"
+    assert client.post("/api/v1/settings", json={"provider": "demo"}).status_code == 400
 
 
 def test_credentials_masked_in_settings(client):
@@ -410,18 +409,6 @@ def test_clear_requires_confirmation(app, client):
     assert storage.count_days(app.state.conn) == 0
 
 
-# ---------- 首启播种 ----------
-
-
-def test_bootstrap_seeds_demo_on_startup(tmp_cfg):
-    application = create_app(tmp_cfg)
-    with TestClient(application) as seeded_client:
-        data = seeded_client.get("/api/v1/status").json()
-        assert data["days_stored"] >= 30
-        summary = seeded_client.get("/api/v1/summary").json()
-        assert summary["day"]["activity"]["steps"] is not None
-
-
 # ---------- 关联与节律 ----------
 
 
@@ -436,33 +423,6 @@ def test_insights_endpoint(app, client):
     for key in ("correlations", "weekday", "heatmap", "bands", "timing", "achievements"):
         assert key in payload
     assert client.get("/api/v1/insights", params={"date": "bad"}).status_code == 400
-
-
-# ---------- 演示数据播种 ----------
-
-
-def test_demo_seed_reports_queue_instead_of_dead_409(app, client):
-    """`start_background` 永远返回 dict，所以原来那个 409 永远不会触发。
-
-    既然排队语义是「已有任务在跑就继续排队」，播种接口就该如实回报排队情况，
-    而不是留一条永远走不到的拒绝分支。
-    """
-    response = client.post("/api/v1/demo/seed", json={"days": 3})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["started"] is True
-    assert payload["days"] == 3
-    assert payload["added"] == 3
-    assert payload["outstanding"] >= 1
-
-    deadline = time.time() + 20
-    while time.time() < deadline and app.state.engine.is_running():
-        time.sleep(0.05)
-    assert not app.state.engine.is_running()
-
-
-def test_demo_seed_rejects_out_of_range_days(client):
-    assert client.post("/api/v1/demo/seed", json={"days": 0}).status_code == 400
 
 
 def test_insights_hides_uncorrected_correlations_by_default(app, client):

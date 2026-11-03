@@ -34,9 +34,7 @@ def ensure_builtin_providers() -> None:
     global _builtins_loaded
     if _builtins_loaded:
         return
-    from .demo import DemoProvider
     from .google_health.provider import GoogleHealthProvider
 
-    register(DemoProvider())
     register(GoogleHealthProvider())
     _builtins_loaded = True
