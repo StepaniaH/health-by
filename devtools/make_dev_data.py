@@ -11,6 +11,7 @@ The product has no demo provider: the generator lives here, outside the packaged
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -40,6 +41,22 @@ def build(out_dir: Path, days: int) -> int:
         # registered in a normal run, so keeping "synthetic" would break `status`,
         # `serve` and the web app with an unknown-provider error.
         storage.set_setting(conn, "provider", storage.DEFAULT_SETTINGS["provider"])
+        # 行数据也标成正式来源：开发库要和真实部署长得一样，否则页头显示
+        # "Google Health" 而每天写着别的来源，读的人会以为数据出了问题。
+        shape = storage.DEFAULT_SETTINGS["provider"]
+        conn.execute("UPDATE days SET source = ?", (shape,))
+        conn.execute("UPDATE raw_days SET source = ?", (shape,))
+        # 快照 JSON 里也有一份 source，界面读的是那一份。
+        for date, data in conn.execute("SELECT date, data FROM days").fetchall():
+            try:
+                snapshot = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if snapshot.get("source") != shape:
+                snapshot["source"] = shape
+                conn.execute("UPDATE days SET data = ? WHERE date = ?",
+                             (json.dumps(snapshot, ensure_ascii=False), date))
+        conn.commit()
         print(f"{ok}/{len(results)} days written to {cfg.db_path}")
         return 0 if ok else 1
     finally:
