@@ -29,9 +29,8 @@ earlier version tag.
 
 ## Local development data
 
-The product has no demo mode and ships no sample data. `devtools/make_dev_data.py` builds a local
-database with the same shape as a real one, using the synthetic generator that stays outside the
-packaged `health_by` module.
+`devtools/make_dev_data.py` builds a local database with the same shape as a real one. It uses the
+generator in `devtools/`, which is not part of the packaged `health_by` module.
 
 ```sh
 .venv/bin/python -m devtools.make_dev_data            # writes ./dev-data, last 30 days
@@ -39,9 +38,5 @@ HEALTH_BY_DATA=./dev-data .venv/bin/python -m health_by.cli serve
 ```
 
 `--days N` and `--out PATH` change the window and the destination. `dev-data/` is ignored by git.
-The stored provider stays at its product default, so the database opens normally; syncing it again
-requires real credentials, but browsing, analysis and the web interface work as they do with real data.
-
-The generated database reports more raw coverage days than normalized days — 13 more for any window.
-That is how the generator fetches (each day returns a 14-day payload, so the earliest request reaches
-13 days before the first synced day), not missing data.
+The database is written with the product's default source, so `serve`, `status` and the web interface
+read it the same way they read a synced library.

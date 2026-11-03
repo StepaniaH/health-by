@@ -15,9 +15,6 @@ health score or diagnosis. AI analysis is optional.
 
 ![Dashboard](docs/screenshots/dashboard-desktop.png)
 
-<sub>Screenshots use the synthetic development dataset. Numbers are generated, not recorded.
-See [Contributing](CONTRIBUTING.md) to build the same database locally.</sub>
-
 ## What it does
 
 - **Sync** — pulls from Google Health API v4 (Fitbit's official channel); every raw response is archived
@@ -154,8 +151,8 @@ Design notes: [docs/architecture.md](docs/architecture.md).
 
 ## Screenshots
 
-All four screenshots use the synthetic development dataset; numbers are generated, not recorded.
-[Contributing](CONTRIBUTING.md) describes how to build it.
+All four screenshots come from the development dataset described in
+[Contributing](CONTRIBUTING.md); the numbers are generated, not recorded.
 
 | | |
 |---|---|
@@ -164,7 +161,7 @@ All four screenshots use the synthetic development dataset; numbers are generate
 
 ![Mobile](docs/screenshots/dashboard-mobile.png)
 
-<sub>Same synthetic dataset throughout; the last one is the same page at 390px.</sub>
+<sub>The last one is the same page at 390px.</sub>
 
 ## Principles
 
