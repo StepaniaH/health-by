@@ -110,7 +110,7 @@ def _open(ctx: click.Context):
 @localized_option("--port", default=None, type=int, help=t('server.cli.serve.help.fc39c6bd7'))
 @click.pass_context
 def serve(ctx: click.Context, host: str | None, port: int | None) -> None:
-    """启动 Web 服务（首次运行会自动准备演示数据）。"""
+    """启动 Web 服务。"""
     cfg = ctx.obj["cfg"]
     import uvicorn
 

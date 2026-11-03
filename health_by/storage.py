@@ -125,7 +125,7 @@ def store_day(conn: sqlite3.Connection, day: DaySnapshot, raw: RawDay) -> None:
     """写入归一化日数据 + 指标行 + 原始留档（单事务）。
 
     同源重同步按字段合并，避免部分失败抹掉已有字段；来源变化时替换该日
-    快照及指标，防止演示数据混入真实记录。
+    快照及指标，防止两个来源的字段混在一起。
     """
     with conn:
         incoming = day.to_dict()
