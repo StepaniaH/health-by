@@ -35,3 +35,7 @@ HEALTH_BY_DATA=./dev-data .venv/bin/python -m health_by.cli serve
 `--days N` and `--out PATH` change the window and the destination. `dev-data/` is ignored by git.
 The stored provider stays at its product default, so the database opens normally; syncing it again
 requires real credentials, but browsing, analysis and the web interface work as they do with real data.
+
+The generated database reports more raw coverage days than normalized days — 13 more for any window.
+That is how the generator fetches (each day returns a 14-day payload, so the earliest request reaches
+13 days before the first synced day), not missing data.
