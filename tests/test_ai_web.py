@@ -1,15 +1,11 @@
 """运行实际 AI 页面模块，验证手动触发、异步日期隔离和纯文本输出。"""
 
 from pathlib import Path
-import shutil
 import subprocess
-
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 Node.js 执行前端模块")
 def test_ai_rendering_never_autogenerates_or_displays_a_reply_for_the_wrong_date():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -118,7 +114,6 @@ vm.runInContext(fs.readFileSync('health_by/web/js/ai.js', 'utf8')
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 Node.js 检查实际排版脚本")
 def test_ai_layout_preserves_text_and_conditions_with_safe_highlights_and_folded_evidence():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -204,7 +199,6 @@ const descendants = host => [host, ...host.children.flatMap(descendants)];
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 Node.js 执行设置页")
 def test_connection_ui_requires_saved_configuration_and_keeps_success_and_errors_visible():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -220,7 +214,7 @@ let defer = false, finish;
 let reply = {ok: true, status: 200, detail: '连接正常', model: 'model-b', latency_ms: 1200};
 const sandbox = {document, URL, toast() {},
   get: async path => path === '/settings' ? {ai: {...ai}, goals: {steps: 8000, sleep_minutes: 480},
-    google_health: {}, demo: {active: true, days_stored: 0}, sync_interval_minutes: 0} : {runs: []},
+    google_health: {}, sync_interval_minutes: 0} : {runs: []},
   post: async (path, body) => {
     if (path === '/settings/ai') {
       ai = {...ai, enabled: body.ai_enabled, base_url: body.ai_base_url, model: body.ai_model};
@@ -283,7 +277,6 @@ vm.runInContext(fs.readFileSync('health_by/web/js/settings.js', 'utf8')
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 Node.js 执行设置页")
 def test_model_picker_preserves_manual_entry_and_discards_stale_lists():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -299,7 +292,7 @@ let modelReply = {ok: true, status: 200, detail: '已获取模型列表', models
 let deferred = false, finish;
 const calls = [];
 const sandbox = {document, URL, toast() {}, window: {},
-  get: async path => path === '/settings' ? {ai: {...ai}, goals: {}, google_health: {}, demo: {}, sync_interval_minutes: 0} : {runs: []},
+  get: async path => path === '/settings' ? {ai: {...ai}, goals: {}, google_health: {}, sync_interval_minutes: 0} : {runs: []},
   post: async (path, body) => {
     if (path === '/settings/ai') {
       ai = {...ai, enabled: body.ai_enabled, base_url: body.ai_base_url, model: body.ai_model};
@@ -362,7 +355,6 @@ vm.runInContext(fs.readFileSync('health_by/web/js/settings.js', 'utf8')
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(shutil.which('node') is None, reason='需要 Node.js 执行窗口控件')
 def test_window_selection_only_reads_cache_and_never_displays_an_old_window_reply():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');

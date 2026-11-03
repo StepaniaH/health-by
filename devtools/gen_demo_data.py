@@ -259,8 +259,8 @@ def _device_sync_time(date: str) -> str:
     return stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-class DemoProvider(Provider):
-    name = "demo"
+class SyntheticProvider(Provider):
+    name = "synthetic"
     display_name = 'Synthetic data'
     auth_kind = "none"
 
@@ -279,7 +279,7 @@ class DemoProvider(Provider):
                 "membershipStartDate": civil_date("2025-03-01")["date"],
             },
             device={
-                "name": "users/me/pairedDevices/demo-tracker",
+                "name": "users/me/pairedDevices/synthetic-tracker",
                 "deviceType": "FITBIT_AIR",
                 "batteryStatus": "Good",
                 "batteryLevel": 78,
@@ -287,7 +287,7 @@ class DemoProvider(Provider):
                 "features": ["HEART_RATE", "SPO2", "SLEEP_STAGES"],
             },
         )
-        return raw_day(date, payload, source="demo")
+        return raw_day(date, payload, source="synthetic")
 
     def translate(self, raw: RawDay):
         return translate_payload(raw)

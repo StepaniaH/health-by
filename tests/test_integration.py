@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from health_by import storage
 from health_by.api.app import SYNC_MAX_DAYS, create_app
 from health_by.providers.base import RawDay
-from devtools.gen_demo_data import DemoProvider
+from devtools.gen_demo_data import SyntheticProvider
 from health_by.util import iso_today, shift_iso
 
 
@@ -152,7 +152,7 @@ def test_day_with_no_usable_data_is_not_stored(conn, tmp_cfg):
     """整天全空（上游没数据）不该入库，否则会污染日期选择和趋势。"""
     from health_by.engine import Engine
 
-    class AllEmpty(DemoProvider):
+    class AllEmpty(SyntheticProvider):
         def translate(self, raw):
             snapshot = super().translate(raw)
             snapshot.sleep = None
@@ -173,7 +173,7 @@ def test_day_with_no_usable_data_is_not_stored(conn, tmp_cfg):
         import unittest.mock as mock
 
         ensure_builtin_providers()
-        with mock.patch.dict(PROVIDERS, {"demo": AllEmpty()}):
+        with mock.patch.dict(PROVIDERS, {"synthetic": AllEmpty()}):
             day = shift_iso(iso_today(), -1)
             snapshot = engine.sync_day(day)
             assert storage.get_day(conn, day) is None

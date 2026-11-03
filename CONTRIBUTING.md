@@ -1,3 +1,9 @@
+## Running tests
+
+Install the Python development dependencies (`pip install -e '.[dev]'`) and Node.js before running
+`python -m pytest`. The browser module tests execute Node.js directly and are not skipped when it is
+missing. Tests use a synthetic source registered only by the test fixtures; product startup is tested
+separately with the default Google Health source and an empty database.
 
 ## Maintainer releases
 

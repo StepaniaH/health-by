@@ -12,7 +12,7 @@ from health_by.engine import Engine
 from health_by.models import DaySnapshot
 from health_by.providers import PROVIDERS, ensure_builtin_providers
 from health_by.providers.base import Provider, ProviderAuthError, ProviderError
-from devtools.gen_demo_data import DemoProvider
+from devtools.gen_demo_data import SyntheticProvider
 from health_by.util import iso_today, shift_iso
 
 DAY = "2026-10-15"
@@ -26,7 +26,7 @@ def engine(tmp_cfg, conn):
     eng.close()
 
 
-def test_sync_demo_day_stores_everything(engine, conn):
+def test_sync_synthetic_day_stores_everything(engine, conn):
     snapshot = engine.sync_day(DAY)
     assert snapshot.date == DAY
     assert storage.get_day(conn, DAY) is not None
@@ -36,44 +36,44 @@ def test_sync_demo_day_stores_everything(engine, conn):
 
 
 def test_sync_days_continues_after_single_failure(engine, conn, monkeypatch):
-    class FlakyDemo(DemoProvider):
+    class FlakySynthetic(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             if date == shift_iso(DAY, -1):
                 raise ProviderError("temporary outage", status=503)
             return super().fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", FlakyDemo())
+    monkeypatch.setitem(PROVIDERS, "synthetic", FlakySynthetic())
     results = engine.sync_days([shift_iso(DAY, -1), DAY])
     assert [r["status"] for r in results] == ["error", "ok"]
     assert storage.get_day(conn, DAY) is not None
 
 
 def test_sync_days_aborts_on_auth_error(engine, monkeypatch):
-    class Deauthorized(DemoProvider):
+    class Deauthorized(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             raise ProviderAuthError("token expired")
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", Deauthorized())
+    monkeypatch.setitem(PROVIDERS, "synthetic", Deauthorized())
     with pytest.raises(ProviderAuthError):
         engine.sync_days([DAY])
 
 
 def test_second_request_queues_instead_of_rejecting(engine, conn, monkeypatch):
-    class SlowDemo(DemoProvider):
+    class SlowSynthetic(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             time.sleep(0.3)
             return super().fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", SlowDemo())
+    monkeypatch.setitem(PROVIDERS, "synthetic", SlowSynthetic())
 
     first = engine.start_background([DAY])
     assert first["outstanding"] == 1
     second = engine.start_background([shift_iso(DAY, -1)])
     # 运行中的请求继续排队，不再 409。`outstanding` 是「在飞总数」：第一个日期还在抓
-    # （SlowDemo 睡 0.3s），所以此时是 2。这里原本写死 1，但那个值取决于协调线程
+    # （SlowSynthetic 睡 0.3s），所以此时是 2。这里原本写死 1，但那个值取决于协调线程
     # 是否已经把第一项取走 —— 时序一变就红，属于不稳定的断言。
     assert second["outstanding"] == 2
     assert second["added"] == 1
@@ -203,9 +203,9 @@ def test_auto_sync_runs_when_due(engine, conn):
     assert engine.auto_sync_tick() is None
 
 
-def test_auth_status_for_demo(engine):
+def test_auth_status_for_synthetic(engine):
     status = engine.auth_status()
-    assert status["provider"] == "demo"
+    assert status["provider"] == "synthetic"
     assert status["auth_kind"] == "none"
     assert status["configured"] is True
 
@@ -213,7 +213,7 @@ def test_auth_status_for_demo(engine):
 def _seed_old_sync(conn, date: str, *, status: str = "ok", when: str = "2000-01-01T00:00:00+00:00"):
     storage.record_sync_run(
         conn,
-        provider="demo",
+        provider="synthetic",
         started_at=when,
         finished_at=when,
         date=date,
@@ -264,9 +264,9 @@ def test_empty_day_still_advances_auto_sync_cursor(engine, conn):
 
 def test_partial_day_is_reported_in_batch_results(engine, conn, monkeypatch):
     """一天里部分上游任务失败时，批次结果必须能看出来，不能一律报 ok。"""
-    provider = DemoProvider()
+    provider = SyntheticProvider()
 
-    class PartlyBroken(DemoProvider):
+    class PartlyBroken(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             raw = provider.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
             raw.errors = [{"key": "sleep", "message": "boom", "status": 500}]
@@ -275,7 +275,7 @@ def test_partial_day_is_reported_in_batch_results(engine, conn, monkeypatch):
             return raw
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", PartlyBroken())
+    monkeypatch.setitem(PROVIDERS, "synthetic", PartlyBroken())
 
     results = engine.sync_days([DAY])
     assert results[0]["status"] == "partial"
@@ -301,7 +301,7 @@ def test_failed_fetch_without_data_is_not_empty_or_an_autosync_anchor(
     engine.sync_day(anchor)
     previous_success = storage.last_successful_sync(conn)
 
-    class Unavailable(DemoProvider):
+    class Unavailable(SyntheticProvider):
         def fetch_raw(self, date, **kwargs):
             from health_by.providers.base import RawDay
 
@@ -316,7 +316,7 @@ def test_failed_fetch_without_data_is_not_empty_or_an_autosync_anchor(
         def translate(self, raw):
             return DaySnapshot(raw.date, raw.source, raw.generated_at)
 
-    monkeypatch.setitem(PROVIDERS, "demo", Unavailable())
+    monkeypatch.setitem(PROVIDERS, "synthetic", Unavailable())
     if background:
         engine.start_background([failed_date])
         deadline = time.monotonic() + 10
@@ -348,9 +348,9 @@ def test_same_day_sync_is_serialised_across_threads(engine, conn, monkeypatch):
     """
     lock = threading.Lock()
     state = {"now": 0, "peak": 0}
-    base = DemoProvider()
+    base = SyntheticProvider()
 
-    class SlowDemo(DemoProvider):
+    class SlowSynthetic(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             with lock:
                 state["now"] += 1
@@ -363,7 +363,7 @@ def test_same_day_sync_is_serialised_across_threads(engine, conn, monkeypatch):
                     state["now"] -= 1
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", SlowDemo())
+    monkeypatch.setitem(PROVIDERS, "synthetic", SlowSynthetic())
 
     threads = [
         threading.Thread(target=engine._sync_day, args=(DAY,))
@@ -385,15 +385,15 @@ def test_same_day_sync_is_serialised_across_threads(engine, conn, monkeypatch):
 
 def test_repeated_queueing_does_not_recurse(engine, conn, monkeypatch):
     """运行期间反复排入新日期时，协调器是用循环续跑而不是递归，不会堆栈溢出。"""
-    base = DemoProvider()
+    base = SyntheticProvider()
 
-    class SlowDemo(DemoProvider):
+    class SlowSynthetic(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             time.sleep(0.01)
             return base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", SlowDemo())
+    monkeypatch.setitem(PROVIDERS, "synthetic", SlowSynthetic())
 
     for offset in range(12):
         engine.start_background([shift_iso(DAY, -offset)])
@@ -412,13 +412,13 @@ def test_parse_drift_is_flagged_when_fields_collapse_without_errors(engine, conn
     这正是 P0-1 保守合并的副作用：None 被当成「没拿到」保留旧值，
     同步会一直显示绿色，数据却冻结在改坏那天。
     """
-    base = DemoProvider()
+    base = SyntheticProvider()
     engine.sync_day(DAY)
     baseline = storage.last_field_count(conn, DAY)
     assert baseline is not None and baseline >= 4
     full = storage.get_day(conn, DAY)
 
-    class RenamedField(DemoProvider):
+    class RenamedField(SyntheticProvider):
         def translate(self, raw):
             snapshot = base.translate(raw)
             # 模拟上游把「睡眠」相关字段改名：解析不出来，静默变成 None
@@ -428,7 +428,7 @@ def test_parse_drift_is_flagged_when_fields_collapse_without_errors(engine, conn
             return snapshot
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", RenamedField())
+    monkeypatch.setitem(PROVIDERS, "synthetic", RenamedField())
 
     results = engine.sync_days([DAY])
     warnings = results[0]["warnings"]
@@ -447,10 +447,10 @@ def test_parse_drift_is_flagged_when_fields_collapse_without_errors(engine, conn
 
 def test_no_drift_warning_when_request_itself_failed(engine, conn, monkeypatch):
     """请求级失败已经记在 errors 里，不该重复报成解析漂移。"""
-    base = DemoProvider()
+    base = SyntheticProvider()
     engine.sync_day(DAY)
 
-    class BrokenJob(DemoProvider):
+    class BrokenJob(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             raw = base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
             raw.errors = [{"key": "sleep", "message": "boom", "status": 500}]
@@ -464,7 +464,7 @@ def test_no_drift_warning_when_request_itself_failed(engine, conn, monkeypatch):
             return snapshot
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", BrokenJob())
+    monkeypatch.setitem(PROVIDERS, "synthetic", BrokenJob())
 
     results = engine.sync_days([DAY])
     assert results[0]["warnings"] == []
@@ -508,9 +508,9 @@ def test_date_locks_still_exclusive_while_cleanup_happens(engine, monkeypatch):
     """回收不能破坏互斥：并发同步同一天时，峰值并发仍必须是 1。"""
     lock = threading.Lock()
     state = {"now": 0, "peak": 0}
-    base = DemoProvider()
+    base = SyntheticProvider()
 
-    class SlowDemo(DemoProvider):
+    class SlowSynthetic(SyntheticProvider):
         def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
             with lock:
                 state["now"] += 1
@@ -523,7 +523,7 @@ def test_date_locks_still_exclusive_while_cleanup_happens(engine, monkeypatch):
                     state["now"] -= 1
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", SlowDemo())
+    monkeypatch.setitem(PROVIDERS, "synthetic", SlowSynthetic())
 
     threads = [threading.Thread(target=engine._sync_day, args=(DAY,)) for _ in range(4)]
     for thread in threads:
@@ -541,10 +541,10 @@ def test_drift_warning_fires_once_not_on_every_resync(engine, conn, monkeypatch)
     基线取「上次实际解析出的字段数」而不是 daily_metrics 的累积行数——
     累积行数只增不减，会让警告永远重复，而且「上次是 N 项」这句话会变成事实错误。
     """
-    base = DemoProvider()
+    base = SyntheticProvider()
     engine.sync_day(DAY)
 
-    class FieldsGone(DemoProvider):
+    class FieldsGone(SyntheticProvider):
         def translate(self, raw):
             snapshot = base.translate(raw)
             snapshot.sleep = None
@@ -553,7 +553,7 @@ def test_drift_warning_fires_once_not_on_every_resync(engine, conn, monkeypatch)
             return snapshot
 
     ensure_builtin_providers()
-    monkeypatch.setitem(PROVIDERS, "demo", FieldsGone())
+    monkeypatch.setitem(PROVIDERS, "synthetic", FieldsGone())
 
     warned = []
     for _ in range(3):
