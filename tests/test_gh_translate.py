@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from health_by.providers._sample import assemble_payload, civil, raw_day
+from devtools.sample_payload import assemble_payload, civil, raw_day
 from health_by.providers.base import RawDay
 from health_by.providers.google_health.translate import translate_payload
 

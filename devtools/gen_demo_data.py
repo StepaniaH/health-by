@@ -8,15 +8,13 @@
 
 from __future__ import annotations
 
-from health_by.i18n import t
-
 import random
 from datetime import date as date_type, datetime, timedelta, timezone
 
-from ._sample import assemble_payload, civil_date, raw_day
-from .base import Provider, RawDay
-from .google_health.translate import translate_payload
-from ..util import iso_range, iso_today, shift_iso
+from devtools.sample_payload import assemble_payload, civil_date, raw_day
+from health_by.providers.base import Provider, RawDay
+from health_by.providers.google_health.translate import translate_payload
+from health_by.util import iso_range, iso_today, shift_iso
 
 WINDOW_DAYS = 14  # 与真实数据源的趋势窗口保持一致
 
@@ -179,7 +177,7 @@ def _day_spec(iso: str) -> dict:
         speed = rng.uniform(10.2, 12.6)  # km/h
         workouts.append(
             {
-                "name": t('server.providers.demo._day_spec.477b4122a'),
+                "name": 'Outdoor running',
                 "start": f"{iso}T18:{rng.randint(2, 25):02d}:00+08:00",
                 "active_duration": f"{minutes * 60}s",
                 "calories": round(minutes * rng.uniform(8.2, 10.4)),
@@ -198,7 +196,7 @@ def _day_spec(iso: str) -> dict:
         minutes = rng.randint(40, 75)
         workouts.append(
             {
-                "name": t('server.providers.demo._day_spec.e81f910c0'),
+                "name": 'Cycling',
                 "start": f"{iso}T10:{rng.randint(5, 40):02d}:00+08:00",
                 "active_duration": f"{minutes * 60}s",
                 "calories": round(minutes * rng.uniform(6.0, 8.0)),
@@ -216,7 +214,7 @@ def _day_spec(iso: str) -> dict:
         minutes = rng.randint(25, 50)
         workouts.append(
             {
-                "name": t('server.providers.demo._day_spec.d4e25a7e3'),
+                "name": 'Walking',
                 "start": f"{iso}T16:{rng.randint(0, 40):02d}:00+08:00",
                 "active_duration": f"{minutes * 60}s",
                 "calories": round(minutes * rng.uniform(3.4, 4.6)),
@@ -261,9 +259,9 @@ def _device_sync_time(date: str) -> str:
     return stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-class DemoProvider(Provider):
-    name = "demo"
-    display_name = t('server.providers.demo.labels.a646e009a')
+class SyntheticProvider(Provider):
+    name = "synthetic"
+    display_name = 'Synthetic data'
     auth_kind = "none"
 
     def auth_status(self, credentials: dict | None) -> dict:
@@ -276,12 +274,12 @@ class DemoProvider(Provider):
         payload = assemble_payload(
             days,
             profile={
-                "display_name": t('server.providers.demo.fetch_raw.711c2c04d'),
+                "display_name": 'Synthetic user',
                 "timeZone": "Asia/Shanghai",
                 "membershipStartDate": civil_date("2025-03-01")["date"],
             },
             device={
-                "name": "users/me/pairedDevices/demo-tracker",
+                "name": "users/me/pairedDevices/synthetic-tracker",
                 "deviceType": "FITBIT_AIR",
                 "batteryStatus": "Good",
                 "batteryLevel": 78,
@@ -289,7 +287,7 @@ class DemoProvider(Provider):
                 "features": ["HEART_RATE", "SPO2", "SLEEP_STAGES"],
             },
         )
-        return raw_day(date, payload, source="demo")
+        return raw_day(date, payload, source="synthetic")
 
     def translate(self, raw: RawDay):
         return translate_payload(raw)

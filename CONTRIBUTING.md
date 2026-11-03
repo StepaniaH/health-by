@@ -1,3 +1,9 @@
+## Running tests
+
+Install the Python development dependencies (`pip install -e '.[dev]'`) and Node.js before running
+`python -m pytest`. The browser module tests execute Node.js directly and are not skipped when it is
+missing. Tests use a synthetic source registered only by the test fixtures; product startup is tested
+separately with the default Google Health source and an empty database.
 
 ## Maintainer releases
 
@@ -20,3 +26,17 @@ Before tagging:
 The tag publishes `stepaniah/health-by:vX.Y.Z` and moves `latest`, and the same image to
 `ghcr.io/stepaniah/health-by`. Do not move or reuse a published tag; roll back by deploying an
 earlier version tag.
+
+## Local development data
+
+`devtools/make_dev_data.py` builds a local database with the same shape as a real one. It uses the
+generator in `devtools/`, which is not part of the packaged `health_by` module.
+
+```sh
+.venv/bin/python -m devtools.make_dev_data            # writes ./dev-data, last 30 days
+HEALTH_BY_DATA=./dev-data .venv/bin/python -m health_by.cli serve
+```
+
+`--days N` and `--out PATH` change the window and the destination. `dev-data/` is ignored by git.
+The database is written with the product's default source, so `serve`, `status` and the web interface
+read it the same way they read a synced library.

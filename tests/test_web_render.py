@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
 import subprocess
 
 import pytest
@@ -12,7 +11,6 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 Node.js 检查基线起点显示")
 def test_truncated_baseline_start_and_sample_count_are_visible():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -35,7 +33,6 @@ assert.equal(nodes.get('card-data').hidden, false);
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 Node.js 检查滚动显示")
 def test_heart_cards_use_server_rolling_values_and_badges_without_recomputing():
     script = r"""
 const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
@@ -82,7 +79,6 @@ assert.match(nodes.get('heart-today-body').textContent, /HRV7 日均值.*近 7 �
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="渲染回归测试需要 Node.js")
 @pytest.mark.parametrize(
     "body,workouts,expected_labels",
     [

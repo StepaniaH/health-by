@@ -1167,8 +1167,7 @@ function updateMeta() {
   clear(node);
   const items = [];
   const provider = (state.status || {}).provider || {};
-  if (provider.provider === "demo") items.push({ text: t("web.dashboard.updateMeta.a646e009a") });
-  else if (provider.provider === "google-health") {
+  if (provider.provider === "google-health") {
     if (provider.needs_reconnect) items.push({ text: t("web.dashboard.updateMeta.d9f0827f3"), klass: "state-warn" });
     else if (!provider.connected) items.push({ text: t("web.dashboard.updateMeta.ba4e26f3b"), klass: "state-warn" });
     else items.push({ text: "Google Health" });

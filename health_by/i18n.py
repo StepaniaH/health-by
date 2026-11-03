@@ -135,20 +135,3 @@ def number(value, digits=0):
     return f"{value:,.{digits}f}"
 
 
-def localize_demo_day(day):
-    if day.get("source") != "demo":
-        return day
-    labels = {}
-    for key in CATALOGS["zh"]:
-        if key.startswith("server.providers.demo."):
-            for catalog in CATALOGS.values():
-                labels[catalog[key]] = key
-    def translate(value):
-        if isinstance(value, str) and value in labels:
-            return t(labels[value])
-        if isinstance(value, dict):
-            return {key: translate(child) for key, child in value.items()}
-        if isinstance(value, list):
-            return [translate(child) for child in value]
-        return value
-    return translate(day)

@@ -3,7 +3,6 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
 import re
-import shutil
 
 import pytest
 from pathlib import Path
@@ -87,7 +86,6 @@ def test_source_guards_distinguish_comments_from_literals_and_do_not_exempt_ui()
         assert good.returncode == 0, good.stdout
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="Browser module tests require Node.js")
 def test_browser_language_priority_parameters_plural_dates_and_text_safety():
     script = r'''
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');

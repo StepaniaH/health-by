@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .base import RawDay
+from health_by.providers.base import RawDay
 
 
 # ---------- 基础形状 ----------

@@ -61,7 +61,7 @@ implementation. Each item below has a matching comment in the code.
    while `hr_min`/`hr_max` retain the original extremes. Raw payloads are archived per day for
    recomputation.
 
-**What one typical day looks like (demo data)**
+**What one typical day looks like (synthetic data)**
 
 | Metric | Example values |
 |---|---|
@@ -72,8 +72,8 @@ implementation. Each item below has a matching comment in the code.
 | HRV / SpO₂ / breathing rate | 42.0 ms / 97.0% / 15.0 /min |
 | Exercise | walking 30 min (3,100 steps) |
 
-> The table above is a **demo-data** shape example, not anyone's measurements. Demo mode (no
-> credentials) reproduces the same field structure.
+> The table above is a **synthetic** shape example, not anyone's measurements. `devtools/`
+> reproduces the same field structure for local development.
 
 **Optional data:** availability of weight, body fat, water, nutrition, blood glucose, ECG,
 irregular rhythm, and core temperature depends on the device and account. The interface hides

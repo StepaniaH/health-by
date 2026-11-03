@@ -2,7 +2,7 @@
 
 [Chinese](zh/setup-google-health.md)
 
-Goal: switch health-by from demo data to real Fitbit / Google Health data.
+Goal: connect a Google Cloud project and sync real Fitbit / Google Health data.
 Mode: **BYO (bring your own GCP project)** — each deployment uses its own OAuth client, which keeps
 Google's Restricted-scope distribution review out of the picture.
 

@@ -1,4 +1,4 @@
-"""HTTP API 测试（TestClient，演示数据源，完全离线）。"""
+"""HTTP API 测试（TestClient，合成测试数据源，完全离线）。"""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ DAY = "2026-06-15"
 
 
 @pytest.fixture
-def app(tmp_cfg):
-    application = create_app(tmp_cfg)
+def app(synthetic_cfg):
+    application = create_app(synthetic_cfg)
     yield application
     application.state.engine.shutdown()
     application.state.engine.close()
@@ -26,7 +26,7 @@ def app(tmp_cfg):
 
 @pytest.fixture
 def client(app):
-    # 不使用上下文管理器 → 不触发 lifespan（不自动播种），由测试自行准备数据
+    # 数据由测试显式同步；启动行为另用 lifespan 测试覆盖。
     return TestClient(app)
 
 
@@ -43,16 +43,46 @@ def test_health(client):
     assert payload["version"]
 
 
-def test_status_defaults_to_demo(client):
+def test_fresh_product_startup_has_only_google_source_and_no_generated_data(
+    tmp_cfg, product_provider_defaults, monkeypatch,
+):
+    from health_by.providers import available_providers, get_provider
+
+    assert product_provider_defaults == "google-health"
+    assert available_providers() == ["google-health"]
+
+    def unexpected_fetch(*args, **kwargs):
+        pytest.fail("Opening an empty dashboard must not fetch or generate data")
+
+    monkeypatch.setattr(get_provider("google-health"), "fetch_raw", unexpected_fetch)
+    application = create_app(tmp_cfg)
+    assert storage.get_setting(application.state.conn, "provider") is None
+    with TestClient(application) as api:
+        status = api.get("/api/v1/status").json()
+        assert status["provider"]["provider"] == "google-health"
+        assert status["days_stored"] == 0
+        assert status["latest_date"] is None
+        assert api.get("/api/v1/settings").json()["provider"] == "google-health"
+        assert api.get("/api/v1/summary").status_code == 404
+        assert api.post("/api/v1/demo/seed", json={"days": 30}).status_code == 404
+        assert api.post("/api/v1/settings", json={"provider": "demo"}).status_code == 400
+        assert storage.count_days(application.state.conn) == 0
+        for lang in ("zh", "en"):
+            settings = api.get(f"/settings?lang={lang}").text
+            assert 'id="gh-client-id"' in settings
+            for retired in ('id="provider-row"', 'id="save-provider"', 'id="seed-demo"', 'id="demo-note"'):
+                assert retired not in settings
+
+
+def test_status_reports_the_configured_source(client):
     payload = client.get("/api/v1/status").json()
-    assert payload["provider"]["provider"] == "demo"
-    assert payload["provider"]["auth_kind"] == "none"
+    assert payload["provider"]["provider"] == "synthetic"
     assert payload["goals"]["steps"] == 8000
 
 
 def test_coverage_api_is_read_only_and_uses_embedded_dates(app, client):
     import json
-    from health_by.providers._sample import civil_date
+    from devtools.sample_payload import civil_date
 
     app.state.conn.execute("INSERT INTO raw_days VALUES (?, 'synthetic', '', ?)", (DAY, json.dumps({
         "hrvRaw": {"dataPoints": [{"dailyHeartRateVariability": {"date": civil_date(shift_iso(DAY, -1))}}]},
@@ -66,7 +96,7 @@ def test_coverage_cache_refreshes_after_local_and_other_connection_writes(app, c
     import importlib
     import json
     from health_by.db import connect
-    from health_by.providers._sample import civil_date
+    from devtools.sample_payload import civil_date
 
     api = importlib.import_module("health_by.api.app")
     original = api.raw_coverage
@@ -140,7 +170,7 @@ def test_summary_and_insights_use_the_same_full_baseline_but_keep_short_chart_tr
     for index in range(30):
         day = DaySnapshot(
             shift_iso(DAY, index - 29),
-            "demo",
+            "synthetic",
             "2026-06-15T00:00:00Z",
             heart=HeartDay(
                 resting_hr=60 if index < 16 else (40 if index % 2 == 0 else 80),
@@ -321,9 +351,9 @@ def test_settings_update_and_validation(client):
     assert client.post("/api/v1/settings", json={"provider": "nope"}).status_code == 400
 
 
-def test_provider_switch(client):
+def test_provider_switch_rejects_unknown_and_accepts_known(client):
     assert client.post("/api/v1/settings", json={"provider": "google-health"}).json()["provider"] == "google-health"
-    assert client.post("/api/v1/settings", json={"provider": "demo"}).json()["provider"] == "demo"
+    assert client.post("/api/v1/settings", json={"provider": "unsupported-source"}).status_code == 400
 
 
 def test_credentials_masked_in_settings(client):
@@ -410,18 +440,6 @@ def test_clear_requires_confirmation(app, client):
     assert storage.count_days(app.state.conn) == 0
 
 
-# ---------- 首启播种 ----------
-
-
-def test_bootstrap_seeds_demo_on_startup(tmp_cfg):
-    application = create_app(tmp_cfg)
-    with TestClient(application) as seeded_client:
-        data = seeded_client.get("/api/v1/status").json()
-        assert data["days_stored"] >= 30
-        summary = seeded_client.get("/api/v1/summary").json()
-        assert summary["day"]["activity"]["steps"] is not None
-
-
 # ---------- 关联与节律 ----------
 
 
@@ -436,33 +454,6 @@ def test_insights_endpoint(app, client):
     for key in ("correlations", "weekday", "heatmap", "bands", "timing", "achievements"):
         assert key in payload
     assert client.get("/api/v1/insights", params={"date": "bad"}).status_code == 400
-
-
-# ---------- 演示数据播种 ----------
-
-
-def test_demo_seed_reports_queue_instead_of_dead_409(app, client):
-    """`start_background` 永远返回 dict，所以原来那个 409 永远不会触发。
-
-    既然排队语义是「已有任务在跑就继续排队」，播种接口就该如实回报排队情况，
-    而不是留一条永远走不到的拒绝分支。
-    """
-    response = client.post("/api/v1/demo/seed", json={"days": 3})
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["started"] is True
-    assert payload["days"] == 3
-    assert payload["added"] == 3
-    assert payload["outstanding"] >= 1
-
-    deadline = time.time() + 20
-    while time.time() < deadline and app.state.engine.is_running():
-        time.sleep(0.05)
-    assert not app.state.engine.is_running()
-
-
-def test_demo_seed_rejects_out_of_range_days(client):
-    assert client.post("/api/v1/demo/seed", json={"days": 0}).status_code == 400
 
 
 def test_insights_hides_uncorrected_correlations_by_default(app, client):

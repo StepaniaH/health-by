@@ -13,15 +13,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from health_by import storage
-from health_by.api.app import DEMO_SEED_DAYS, SYNC_MAX_DAYS, create_app
+from health_by.api.app import SYNC_MAX_DAYS, create_app
 from health_by.providers.base import RawDay
-from health_by.providers.demo import DemoProvider
+from devtools.gen_demo_data import SyntheticProvider
 from health_by.util import iso_today, shift_iso
 
 
 @pytest.fixture
-def client(tmp_cfg):
+def client(tmp_cfg, synthetic_provider):
     application = create_app(tmp_cfg)
+    storage.set_setting(application.state.conn, "provider", synthetic_provider)
     yield TestClient(application)
     application.state.engine.shutdown()
     application.state.engine.close()
@@ -40,7 +41,7 @@ def _wait_idle(client: TestClient, timeout: float = 60.0) -> None:
 # ---------- 主链路 ----------
 
 
-def test_full_chain_from_empty_database(client):
+def test_full_chain_from_empty_database(client, synthetic_provider):
     """空库 → 播种 → 同步 → 报告 → 洞察，整条链路的契约都要成立。"""
 
     # 1) 空库：健康检查能过，状态可读，不能 500
@@ -55,7 +56,7 @@ def test_full_chain_from_empty_database(client):
     assert client.get("/api/v1/summary").status_code == 404
 
     # 3) 播种
-    seeded = client.post("/api/v1/demo/seed", json={"days": 10})
+    seeded = client.post("/api/v1/sync", json={"days": 10})
     assert seeded.status_code == 200
     assert seeded.json()["started"] is True
     _wait_idle(client)
@@ -103,7 +104,7 @@ def test_full_chain_from_empty_database(client):
     # 7) 导出：能拿到全部内容
     exported = client.get("/api/v1/export").json()
     assert len(exported["days"]) == 10
-    assert exported["settings"]["provider"] == "demo"
+    assert exported["settings"]["provider"] == synthetic_provider
 
 
 # ---------- 边界 ----------
@@ -111,7 +112,7 @@ def test_full_chain_from_empty_database(client):
 
 def test_single_day_chain_does_not_pretend_to_have_trends(client):
     """只有 1 天数据时，趋势和相关性都不该硬编结论。"""
-    client.post("/api/v1/demo/seed", json={"days": 1})
+    client.post("/api/v1/sync", json={"days": 1})
     _wait_idle(client)
 
     dates = client.get("/api/v1/dates").json()["dates"]
@@ -132,13 +133,11 @@ def test_oversized_window_is_rejected_not_truncated_silently(client):
     assert response.status_code == 400
     assert str(SYNC_MAX_DAYS) in response.json()["detail"]
 
-    # 播种也有自己的上限
-    assert client.post("/api/v1/demo/seed", json={"days": DEMO_SEED_DAYS + 1}).status_code == 400
 
 
 def test_insights_window_is_clamped_to_supported_range(client):
     """insights 的 days 参数超出范围时被夹到 [7, 90]，不能把窗口开到 0 或无限大。"""
-    client.post("/api/v1/demo/seed", json={"days": 3})
+    client.post("/api/v1/sync", json={"days": 3})
     _wait_idle(client)
     latest = client.get("/api/v1/dates").json()["dates"][-1]
 
@@ -153,7 +152,7 @@ def test_day_with_no_usable_data_is_not_stored(conn, tmp_cfg):
     """整天全空（上游没数据）不该入库，否则会污染日期选择和趋势。"""
     from health_by.engine import Engine
 
-    class AllEmpty(DemoProvider):
+    class AllEmpty(SyntheticProvider):
         def translate(self, raw):
             snapshot = super().translate(raw)
             snapshot.sleep = None
@@ -174,7 +173,7 @@ def test_day_with_no_usable_data_is_not_stored(conn, tmp_cfg):
         import unittest.mock as mock
 
         ensure_builtin_providers()
-        with mock.patch.dict(PROVIDERS, {"demo": AllEmpty()}):
+        with mock.patch.dict(PROVIDERS, {"synthetic": AllEmpty()}):
             day = shift_iso(iso_today(), -1)
             snapshot = engine.sync_day(day)
             assert storage.get_day(conn, day) is None

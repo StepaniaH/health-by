@@ -12,7 +12,7 @@ from .providers.base import RawDay
 from .util import shift_iso, utc_now_iso
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "provider": "demo",
+    "provider": "google-health",
     "goals": {"steps": 8000, "sleep_minutes": 480},
     "sync_interval_minutes": 360,
     "ai_enabled": False,
@@ -125,7 +125,7 @@ def store_day(conn: sqlite3.Connection, day: DaySnapshot, raw: RawDay) -> None:
     """写入归一化日数据 + 指标行 + 原始留档（单事务）。
 
     同源重同步按字段合并，避免部分失败抹掉已有字段；来源变化时替换该日
-    快照及指标，防止演示数据混入真实记录。
+    快照及指标，防止两个来源的字段混在一起。
     """
     with conn:
         incoming = day.to_dict()

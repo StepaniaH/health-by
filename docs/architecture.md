@@ -7,7 +7,8 @@
 - **Self-hosted first** — data lives only in local SQLite; no telemetry; binds `127.0.0.1` by default.
 - **One internal contract** — views and analysis never depend on a remote API's shape, so the data
   source is replaceable.
-- **Demo first** — the app runs, tests, and reviews without credentials.
+- **Local synthetic data** — `devtools/` builds a database with the same shape as real data, so the
+  interface can be developed and reviewed without credentials.
 - **Restraint** — no diagnosis, no composite score; every conclusion traces back to a measurement, a
   user goal, or a visible baseline.
 
@@ -46,7 +47,6 @@
 | `health_by/models.py` | `DaySnapshot` contract and metric extraction |
 | `health_by/storage.py` | read/write for days / daily_metrics / raw_days / sync_runs / settings |
 | `health_by/providers/base.py` | data source contract (fetch_raw / translate / optional OAuth methods) |
-| `health_by/providers/demo.py` | demo data: synthetic GHA-shaped payloads through the same translation pipeline |
 | `health_by/providers/google_health/` | real data source: OAuth (PKCE) + task registry + fetch + translate |
 | `health_by/engine.py` | sync engine: shared throttle, atomic token rotation, queue + concurrent workers, auto-sync thread |
 | `health_by/analysis.py` | baseline comparison / period deltas / coverage and freshness / rule-based insights |
@@ -54,7 +54,8 @@
 | `health_by/insights.py` | recovery, load, rhythm, correlations, weekly report, summary table (local archive only) |
 | `health_by/api/app.py` | FastAPI factory: JSON API (including `/api/v1/insights`) + OAuth routes + static pages |
 | `health_by/web/` | zero-build frontend (native ES modules + hand-written SVG charts) |
-| `health_by/cli.py` | Click CLI: serve / sync / demo / status / export / db (stats, check, vacuum) |
+| `health_by/cli.py` | Click CLI: serve / sync / status / export / db (stats, check, vacuum) |
+| `devtools/` | synthetic generator used for local development data; not part of the packaged module |
 
 ## Security boundaries
 
@@ -81,8 +82,8 @@ A schema change means appending a new version block to `MIGRATIONS` in `db.py` a
 
 ## Key design decisions
 
-- **demo = synthetic GHA payloads through the real translation pipeline** — demo and real data share
-  one code path, so there is no second implementation to drift.
+- **one translation pipeline** — the development generator emits GHA-shaped payloads that go through
+  the same translation code as real data, so there is no second implementation to drift.
 - **Partial failure is tolerated** — the 31 tasks run independently, one failure never cancels the
   rest, and coverage reaches the interface.
 - **One meaning for 401** — every 401 means "reconnect required", matching Google's 7-day token policy

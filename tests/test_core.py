@@ -120,7 +120,7 @@ def test_secret_store_wrong_key_fails(tmp_path):
 
 
 def test_metric_values_skips_none():
-    day = DaySnapshot(date="2026-10-15", source="demo", generated_at="t")
+    day = DaySnapshot(date="2026-10-15", source="synthetic", generated_at="t")
     day.activity.steps = 8000
     day.activity.calories_out = 2100.0
     values = metric_values(day)
@@ -129,14 +129,14 @@ def test_metric_values_skips_none():
 
 def test_metric_values_skips_nan():
     """NaN 绑定到 SQLite 会变成 NULL，触发 daily_metrics.value 的 NOT NULL。"""
-    day = DaySnapshot(date="2026-10-15", source="demo", generated_at="t")
+    day = DaySnapshot(date="2026-10-15", source="synthetic", generated_at="t")
     day.activity.steps = float("nan")  # type: ignore[assignment]
     day.heart.resting_hr = 60
     assert metric_values(day) == {"resting_hr": 60.0}
 
 
 def test_day_snapshot_serializable():
-    day = DaySnapshot(date="2026-10-15", source="demo", generated_at="t")
+    day = DaySnapshot(date="2026-10-15", source="synthetic", generated_at="t")
     blob = json.dumps(day.to_dict())
     assert "2026-10-15" in blob
 

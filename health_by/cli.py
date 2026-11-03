@@ -1,4 +1,4 @@
-"""Click CLI：serve / sync / demo / status / export。"""
+"""Click CLI：serve / sync / status / export / db。"""
 
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ def _open(ctx: click.Context):
 @localized_option("--port", default=None, type=int, help=t('server.cli.serve.help.fc39c6bd7'))
 @click.pass_context
 def serve(ctx: click.Context, host: str | None, port: int | None) -> None:
-    """启动 Web 服务（首次运行会自动准备演示数据）。"""
+    """启动 Web 服务。"""
     cfg = ctx.obj["cfg"]
     import uvicorn
 
@@ -158,22 +158,6 @@ def sync_cmd(ctx: click.Context, date_value: str | None, days: int) -> None:
             # 脚本用户靠退出码判断成败：有失败就必须非零，否则 cron/CI 永远以为成功。
             click.echo(t('server.cli.sync_cmd.7e132c539', failed=failed), err=True)
             sys.exit(1)
-    finally:
-        engine.close()
-        conn.close()
-
-
-@main.command(help=t('server.cli.demo.help.3c2a3d23f'))
-@localized_option("--days", default=30, show_default=True, type=int, help=t('server.cli.demo.help.0a9710b2f'))
-@click.pass_context
-def demo(ctx: click.Context, days: int) -> None:
-    """生成/刷新演示数据并切换到演示模式（覆盖同日期数据）。"""
-    _, conn, engine = _open(ctx)
-    try:
-        storage.set_setting(conn, "provider", "demo")
-        count = max(1, min(days, 60))
-        results = engine.sync_days(iso_range(iso_today(), count))
-        click.echo(t('server.cli.demo.9b730cd40', p1=len(results), p2=results[0]['date'], p3=results[-1]['date']))
     finally:
         engine.close()
         conn.close()
