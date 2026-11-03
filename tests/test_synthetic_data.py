@@ -120,7 +120,8 @@ def test_local_data_command_creates_an_unregistered_source_archive(tmp_path):
     try:
         assert storage.count_days(connection) == 2
         assert storage.get_setting(connection, "provider") == "google-health"
-        assert {row[0] for row in connection.execute("SELECT DISTINCT source FROM days")} == {"synthetic"}
+        # 开发库要和真实部署长得一样：行数据也标成正式来源。
+    assert {row[0] for row in connection.execute("SELECT DISTINCT source FROM days")} == {"google-health"}
     finally:
         connection.close()
     # A new process must read the archive without registering the development source.
