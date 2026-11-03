@@ -19,6 +19,7 @@ from health_by import db, storage
 from health_by.config import Config
 from health_by.engine import Engine
 from health_by.providers import PROVIDERS, ensure_builtin_providers
+from health_by.secrets import SecretStore
 from health_by.util import iso_range, iso_today
 
 from devtools.gen_demo_data import SyntheticProvider
@@ -57,6 +58,16 @@ def build(out_dir: Path, days: int) -> int:
                 conn.execute("UPDATE days SET data = ? WHERE date = ?",
                              (json.dumps(snapshot, ensure_ascii=False), date))
         conn.commit()
+        # 页头会读 credentials 判断"是否已连接"。开发库放一份占位凭据，
+        # 否则截图和页面顶上会一直挂着 "Google Health not connected"。
+        if storage.load_credentials_raw(conn, shape) is None:
+            store = SecretStore(cfg.data_dir / "secret.key")
+            storage.save_credentials_raw(conn, shape, store.encrypt_json({
+                "client_id": "dev-placeholder.apps.googleusercontent.com",
+                "client_secret": "dev-placeholder",
+                "tokens": {"refresh_token": "dev-placeholder"},
+            }))
+            conn.commit()
         print(f"{ok}/{len(results)} days written to {cfg.db_path}")
         return 0 if ok else 1
     finally:
