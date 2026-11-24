@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from health_by.i18n import t
 
+import ipaddress
 import json
+import os
 import socket
 import time
 from urllib.parse import urlsplit
@@ -15,6 +17,8 @@ import httpx
 from .. import __version__
 
 ANALYSIS_MAX_TOKENS = 2000
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+_BLOCKED_HOSTNAMES = {"metadata.google.internal", "metadata.goog"}
 
 USER_AGENT = f"health-by/{__version__}"
 
@@ -41,6 +45,7 @@ AI_ERROR_TEXT = {
     "models_invalid": t('server.ai.client.labels.230885c7f'),
     "models_empty": t('server.ai.client.labels.b49eadfe7'),
     "models_ok": t('server.ai.client.labels.24e6c176f'),
+    "response_too_large": t('server.ai.client.labels.response_too_large'),
 }
 
 
@@ -70,6 +75,23 @@ class AIError(Exception):
         self.kind = kind
 
 
+def _is_loopback_host(hostname: str) -> bool:
+    host = hostname.lower().rstrip(".")
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    return ip.is_loopback
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    ip = getattr(ip, "ipv4_mapped", None) or ip
+    return ip.is_link_local or ip.is_unspecified or ip.is_multicast
+
+
 def validate_base_url(value: str) -> str:
     try:
         parts = urlsplit(value.strip())
@@ -78,10 +100,59 @@ def validate_base_url(value: str) -> str:
         valid = False
     if not valid or parts.username or parts.password or parts.query or parts.fragment:
         raise AIError(t('server.ai.client.validate_base_url.ffde5272c'))
+    hostname = (parts.hostname or "").lower().rstrip(".")
+    if hostname in _BLOCKED_HOSTNAMES:
+        raise AIError(t('server.ai.client.validate_base_url.blocked_host'), 400, kind="invalid_url")
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+    if ip is not None and _is_blocked_ip(ip):
+        raise AIError(t('server.ai.client.validate_base_url.blocked_host'), 400, kind="invalid_url")
     normalized = value.strip().rstrip("/")
     if normalized.endswith("/chat/completions"):
         normalized = normalized[:-len("/chat/completions")]
     return normalized
+
+
+def validate_endpoint_security(base_url: str, *, has_api_key: bool) -> None:
+    if not has_api_key:
+        return
+    parts = urlsplit(base_url)
+    if (
+        parts.scheme == "http"
+        and not _is_loopback_host(parts.hostname or "")
+        and os.environ.get("HEALTH_BY_ALLOW_INSECURE_AI_HTTP") != "1"
+    ):
+        raise AIError(t('server.ai.client.validate_base_url.insecure_http'), 400, kind="invalid_url")
+
+
+def _verify_resolved_addresses(url: str) -> None:
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").lower().rstrip(".")
+    if not hostname:
+        raise AIError(AI_ERROR_TEXT["invalid_url"], 400, kind="invalid_url")
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if _is_blocked_ip(ip):
+            raise AIError(t('server.ai.client.validate_base_url.blocked_host'), 400, kind="invalid_url")
+        return
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise AIError(AI_ERROR_TEXT["dns_error"], 502, kind="dns_error") from None
+    for _, _, _, _, sockaddr in infos:
+        addr = sockaddr[0].split("%", 1)[0]
+        try:
+            resolved = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _is_blocked_ip(resolved):
+            raise AIError(t('server.ai.client.validate_base_url.blocked_host'), 400, kind="invalid_url")
 
 
 def _redact(value, key: str):
@@ -97,6 +168,7 @@ def _redact(value, key: str):
 class AIClient:
     def __init__(self, base_url: str, model: str, api_key: str = "", *, session_id: str | None = None):
         self.base_url = validate_base_url(base_url)
+        validate_endpoint_security(self.base_url, has_api_key=bool(api_key))
         self.model = model
         self._api_key = api_key
         host = urlsplit(self.base_url).hostname.lower().rstrip(".")
@@ -111,7 +183,31 @@ class AIClient:
             headers["x-opencode-session"] = self.session_id
         try:
             with httpx.Client(timeout=httpx.Timeout(timeout, connect=10), trust_env=False, follow_redirects=False) as http:
-                return http.request(method, url, headers=headers, json=body)
+                if type(http._transport) is httpx.HTTPTransport:
+                    _verify_resolved_addresses(url)
+                with http.stream(method, url, headers=headers, json=body) as response:
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            if int(content_length) > MAX_RESPONSE_BYTES:
+                                raise AIError(AI_ERROR_TEXT["response_too_large"], 502, kind="response_too_large")
+                        except ValueError:
+                            pass
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in response.iter_bytes():
+                        total += len(chunk)
+                        if total > MAX_RESPONSE_BYTES:
+                            raise AIError(AI_ERROR_TEXT["response_too_large"], 502, kind="response_too_large")
+                        chunks.append(chunk)
+                    body_bytes = b"".join(chunks)
+                    # iter_bytes() 已完成内容解压，重建响应时必须移除压缩/分块头避免二次解压失败。
+                    buffered_headers = httpx.Headers(
+                        (key, value)
+                        for key, value in response.headers.multi_items()
+                        if key.lower() not in ("content-encoding", "content-length", "transfer-encoding")
+                    )
+                    return httpx.Response(response.status_code, headers=buffered_headers, content=body_bytes)
         except httpx.TimeoutException:
             raise AIError(AI_ERROR_TEXT["timeout"], 504, kind="timeout") from None
         except httpx.ConnectError as exc:

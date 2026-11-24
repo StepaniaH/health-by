@@ -167,3 +167,52 @@ def test_minimal_dual_fields_preserve_all_chinese_references_and_only_the_real_u
     assert set(validation["referenced_fields"]) >= {"心率变异性", "静息心率", "呼吸频率", "血氧", "睡眠时长", "步数"}
     assert validation["unsupported_sentences"] == 1 and validation["state"] == "warn"
     assert [item["text"] for item in validation["warnings"]] == ["保持作息。"]
+
+
+
+def test_validation_v3_fences_lists_sign_unit_binding_and_clinical_safety():
+    from health_by.ai.validation import RULES_VERSION
+
+    assert RULES_VERSION == "v3"
+    payload = {
+        "day": {"heart": {"resting_hr_today": 64, "hrv_ms_today": 42}, "activity": {"steps_today": 8000}, "sleep": {"total_minutes_today": None}},
+        "statistics": {
+            "comparisons": {"hrv_ms": {"current_today": 42, "baseline": 50, "percent_change_today": -16.0}},
+            "recovery": {"hrv_delta_pct_today": -16.0},
+        },
+    }
+
+    # 1. Markdown 代码围栏与编号列表 1./2. 不再把序号当作幻觉数字，REPAIR_FALLBACK_ADVICE 允许通过
+    fenced = '```json\n' + json.dumps({
+        "phenomenon": "1. 今日 HRV 42 ms。\n2. 静息心率 64 bpm。",
+        "causes": "看不出，因为缺少睡眠时长记录。",
+        "advice": "1. 本轮没有可执行的建议。",
+    }, ensure_ascii=False) + '\n```'
+    parsed, res = validate_output(fenced, payload)
+    assert res["missed"] == [] and res["state"] == "ok", res
+
+    # 2. 正负号或增减方向翻转（hrv_delta_pct = -16%，写成 +16% 或高于基线 16%）必须失败
+    flip_text = json.dumps({"phenomenon": "HRV 比基线高出 16%。", "causes": "HRV 有记录。", "advice": None}, ensure_ascii=False)
+    _, flip_res = validate_output(flip_text, payload)
+    assert flip_res["state"] == "failed" and any(i.get("code") == "sign_mismatch" for i in flip_res["issues"])
+
+    # 3. 指标单位张冠李戴（把 64 bpm 写成 HRV 64 ms）必须失败
+    swap_text = json.dumps({"phenomenon": "今日 HRV 64 ms。", "causes": "HRV 有记录。", "advice": None}, ensure_ascii=False)
+    _, swap_res = validate_output(swap_text, payload)
+    assert swap_res["state"] == "failed" and any(i.get("code") == "metric_unit_mismatch" for i in swap_res["issues"])
+
+    # 4. 临床诊断与开药必须严格拦截，即使存在不规则心律告警也不放行；但告警存在时允许中性建议就医
+    alert_payload = {
+        "day": {"alerts": {"irregular_rhythm_alerts_today": 2}, "heart": {"resting_hr_today": 64}},
+    }
+    seek_care = json.dumps({
+        "phenomenon": "心律异常提醒 2 次。",
+        "causes": "心律异常提醒记录 2 次。",
+        "advice": "针对 2 次心律异常提醒，建议就医检查。",
+    }, ensure_ascii=False)
+    _, seek_res = validate_output(seek_care, alert_payload)
+    assert seek_res["state"] == "ok", seek_res
+
+    diag = json.dumps({"phenomenon": "心律异常提醒 2 次。", "causes": "已确诊房颤。", "advice": "建议服用阿司匹林 100 毫克。"}, ensure_ascii=False)
+    _, diag_res = validate_output(diag, alert_payload)
+    assert diag_res["state"] == "failed" and any(i.get("code") == "clinical_safety" for i in diag_res["issues"])

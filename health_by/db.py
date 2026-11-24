@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from health_by.i18n import t
 
-import sqlite3
 import logging
+import os
+import re
+import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 MIGRATIONS: list[tuple[int, str]] = [
     (
@@ -88,7 +90,7 @@ MIGRATIONS: list[tuple[int, str]] = [
     (
         4,
         """
-        CREATE TABLE ai_analyses (
+        CREATE TABLE IF NOT EXISTS ai_analyses (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             date                TEXT NOT NULL,
             model               TEXT NOT NULL,
@@ -102,8 +104,8 @@ MIGRATIONS: list[tuple[int, str]] = [
             base_url            TEXT NOT NULL,
             status              TEXT NOT NULL
         );
-        CREATE INDEX idx_ai_cache ON ai_analyses (date, model, prompt_version, base_url, status, id);
-        CREATE TABLE ai_egress (
+        CREATE INDEX IF NOT EXISTS idx_ai_cache ON ai_analyses (date, model, prompt_version, base_url, status, id);
+        CREATE TABLE IF NOT EXISTS ai_egress (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             analysis_id         INTEGER NOT NULL REFERENCES ai_analyses(id) ON DELETE CASCADE,
             attempt             INTEGER NOT NULL CHECK (attempt IN (1, 2)),
@@ -133,7 +135,7 @@ MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE ai_analyses ADD COLUMN start_date TEXT;
         ALTER TABLE ai_analyses ADD COLUMN end_date TEXT;
         UPDATE ai_analyses SET start_date = date, end_date = date;
-        CREATE INDEX idx_ai_window_cache ON ai_analyses
+        CREATE INDEX IF NOT EXISTS idx_ai_window_cache ON ai_analyses
             (start_date, end_date, model, prompt_version, base_url, status, id);
         """,
     ),
@@ -145,7 +147,7 @@ MIGRATIONS: list[tuple[int, str]] = [
         UPDATE ai_analyses SET payload_schema_version = 'window-v1' WHERE start_date != end_date;
         UPDATE ai_egress SET payload_schema_version =
             (SELECT payload_schema_version FROM ai_analyses WHERE id = ai_egress.analysis_id);
-        CREATE INDEX idx_ai_schema_cache ON ai_analyses
+        CREATE INDEX IF NOT EXISTS idx_ai_schema_cache ON ai_analyses
             (start_date, end_date, model, prompt_version, payload_schema_version, base_url, status, id);
         """,
     ),
@@ -160,14 +162,26 @@ MIGRATIONS: list[tuple[int, str]] = [
         CREATE INDEX IF NOT EXISTS idx_raw_measure_dates ON raw_measure_dates (measure_date);
         """,
     ),
+    (
+        9,
+        """
+        -- v0.0.3 removed the built-in demo provider; migrate persisted v0.0.2 settings cleanly.
+        UPDATE settings SET value = '"google-health"' WHERE key = 'provider' AND value = '"demo"';
+        """,
+    ),
 
 ]
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    is_new = not Path(db_path).exists()
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    path_str = str(db_path)
+    is_new = path_str != ":memory:" and not Path(db_path).exists()
+    conn = sqlite3.connect(path_str, check_same_thread=False)
     if is_new:
+        try:
+            os.chmod(db_path, 0o600)
+        except OSError:
+            pass
         logging.getLogger(__name__).warning(t('server.db.connect.913328f65'), Path(db_path).resolve())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -176,16 +190,94 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _split_sql_statements(sql: str) -> list[str]:
+    """将多条 SQL 语句拆分为单条可执行语句，避免 executescript 隐式提交破坏事务原子性。"""
+    statements: list[str] = []
+    buffer: list[str] = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        buffer.append(line)
+        candidate = "\n".join(buffer)
+        if sqlite3.complete_statement(candidate):
+            statements.append(candidate.strip())
+            buffer.clear()
+    remainder = "\n".join(buffer).strip()
+    if remainder:
+        statements.append(remainder)
+    return statements
+
+
+_ALTER_ADD_COLUMN_RE = re.compile(
+    r"^ALTER\s+TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+ADD\s+COLUMN\s+([A-Za-z_][A-Za-z0-9_]*)\b",
+    re.IGNORECASE,
+)
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(row["name"].lower() == column.lower() for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
 def migrate(conn: sqlite3.Connection) -> None:
+    if conn.in_transaction:
+        conn.commit()
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.commit()
     row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     current = int(row["value"]) if row else 0
     for version, sql in MIGRATIONS:
-        if version > current:
-            conn.executescript(sql)
+        if version <= current:
+            continue
+        statements = _split_sql_statements(sql)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row_in_tx = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            current = int(row_in_tx["value"]) if row_in_tx else 0
+            if version <= current:
+                conn.rollback()
+                continue
+            for stmt in statements:
+                # 兼容旧版非事务迁移在中途中断后遗留的半迁移列，避免 duplicate column name 阻断恢复。
+                alter_match = _ALTER_ADD_COLUMN_RE.match(stmt)
+                if alter_match and _column_exists(conn, alter_match.group(1), alter_match.group(2)):
+                    continue
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(version),),
+            )
+            conn.commit()
+            current = version
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
     if current < SCHEMA_VERSION:
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
-    conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+
+def backup_database(conn: sqlite3.Connection, dest: Path) -> Path:
+    """使用 sqlite3 online backup API 创建一致备份，并将权限设为 0600。"""
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest_conn = sqlite3.connect(str(dest))
+    try:
+        conn.backup(dest_conn)
+    finally:
+        dest_conn.close()
+    try:
+        os.chmod(dest, 0o600)
+    except OSError:
+        pass
+    return dest

@@ -29,8 +29,23 @@ ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "health_by" / "web"
 
 PAGES = {
-    "index.html": ["js/api.js", "js/format.js", "js/charts.js", "js/dashboard.js", "js/ai.js"],
-    "settings.html": ["js/api.js", "js/format.js", "js/settings.js"],
+    "index.html": [
+        "js/theme.js",
+        "js/api.js",
+        "js/format.js",
+        "js/ui-controls.js",
+        "js/charts.js",
+        "js/dashboard-dom.js",
+        "js/dashboard-today.js",
+        "js/dashboard-sleep.js",
+        "js/dashboard-activity.js",
+        "js/dashboard-heart.js",
+        "js/dashboard-body.js",
+        "js/dashboard-data.js",
+        "js/dashboard.js",
+        "js/ai.js",
+    ],
+    "settings.html": ["js/theme.js", "js/api.js", "js/format.js", "js/ui-controls.js", "js/settings.js"],
 }
 
 ID_ATTR = re.compile(r'\bid="([^"]+)"')

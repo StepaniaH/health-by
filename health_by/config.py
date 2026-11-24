@@ -49,6 +49,9 @@ class Config:
 
     @property
     def secret_key_path(self) -> Path:
+        override = env_value("SECRET_KEY_PATH")
+        if override:
+            return Path(override).expanduser().resolve()
         return self.data_dir / "secret.key"
 
     @property
@@ -70,6 +73,7 @@ def load_config(
     *,
     host: str | None = None,
     port: int | None = None,
+    ensure: bool = True,
 ) -> Config:
     """数据目录解析：显式参数 > HEALTH_BY_DATA > ./data。"""
     resolved = data_dir if data_dir is not None else env_value("DATA", "./data")
@@ -85,5 +89,6 @@ def load_config(
         pace_ms=int(pace_raw) if pace_raw is not None else DEFAULT_PACE_MS,
     )
     cfg.pace_ms = max(0, cfg.pace_ms)
-    cfg.ensure_dirs()
+    if ensure:
+        cfg.ensure_dirs()
     return cfg

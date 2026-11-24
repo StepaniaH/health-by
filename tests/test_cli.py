@@ -124,3 +124,137 @@ def test_retired_demo_command_is_not_available(tmp_path, product_provider_defaul
     result = run(tmp_path / "data", "demo", "--days", "30")
     assert result.exit_code == 2
     assert "No such command" in result.output
+
+
+
+def test_cli_export_writes_0600_streaming_json_and_redacts_oauth_logs(tmp_path):
+    from health_by.cli import redact_access_target
+
+    assert redact_access_target("/oauth/callback?code=secret-auth-code&state=s1") == "/oauth/callback?[redacted]"
+    assert redact_access_target("/settings?oauth=error&message=token_err") == "/settings?[redacted]"
+    assert redact_access_target("/api/v1/summary?date=2026-10-01") == "/api/v1/summary?date=2026-10-01"
+
+    data_dir = tmp_path / "data"
+    out_file = tmp_path / "backup.json"
+    result = run(data_dir, "export", str(out_file))
+    assert result.exit_code == 0, result.output
+    assert (out_file.stat().st_mode & 0o777) == 0o600
+    payload = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "days" in payload and "raw_days" in payload
+
+
+def test_serve_passes_overridden_host_port_to_create_app(tmp_path, monkeypatch):
+    from health_by.api.app import create_app as real_create_app
+
+    captured = {}
+
+    def fake_create_app(cfg):
+        captured["cfg"] = cfg
+        app = real_create_app(cfg)
+        captured["default_redirect_uri"] = app.state.default_redirect_uri
+        app.state.engine.shutdown()
+        app.state.engine.close()
+        app.state.conn.close()
+        return app
+
+    def fake_uvicorn_run(app, **kwargs):
+        captured["uvicorn"] = kwargs
+
+    monkeypatch.setattr("health_by.api.app.create_app", fake_create_app)
+    monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
+
+    data_dir = tmp_path / "serve-data"
+    result = run(data_dir, "serve", "--host", "0.0.0.0", "--port", "41000")
+    assert result.exit_code == 0, result.output
+    assert captured["cfg"].host == "0.0.0.0"
+    assert captured["cfg"].port == 41000
+    assert captured["default_redirect_uri"] == "http://127.0.0.1:41000/oauth/callback"
+    assert captured["uvicorn"]["host"] == "0.0.0.0"
+    assert captured["uvicorn"]["port"] == 41000
+
+
+def test_export_refuses_db_target_and_keeps_existing_file_on_error(tmp_path, monkeypatch, synthetic_cfg):
+    from health_by import storage as storage_module
+
+    data_dir = synthetic_cfg.data_dir
+    res = run(data_dir, "sync", "--date", "2026-10-15")
+    assert res.exit_code == 0, res.output
+    db_file = data_dir / "health-by.db"
+    before_bytes = db_file.read_bytes()
+
+    refused = run(data_dir, "export", str(db_file))
+    assert refused.exit_code != 0
+    assert db_file.read_bytes() == before_bytes
+
+    out_file = tmp_path / "existing.json"
+    out_file.write_text('{"keep": true}', encoding="utf-8")
+
+    def boom_iter(_conn):
+        yield '{"partial": '
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(storage_module, "iter_export_json", boom_iter)
+    failed = run(data_dir, "export", str(out_file))
+    assert failed.exit_code != 0
+    assert out_file.read_text(encoding="utf-8") == '{"keep": true}'
+    assert not list(tmp_path.glob(".existing.json.*.tmp"))
+
+
+def test_dry_run_commands_do_not_create_db_or_dir(tmp_path, product_provider_defaults):
+    empty_dir = tmp_path / "never-created"
+    r1 = run(empty_dir, "db", "compress-raw", "--dry-run")
+    assert r1.exit_code == 0, r1.output
+    assert not empty_dir.exists()
+
+    r2 = run(empty_dir, "retranslate", "--all", "--dry-run")
+    assert r2.exit_code == 0, r2.output
+    assert not empty_dir.exists()
+
+
+def test_dry_run_reads_legacy_db_and_leaves_no_wal_shm_sidecars(tmp_path):
+    """只有旧名 fitbit-by.db 时 --dry-run 能准确统计且不迁移；普通库预演不残留 -wal/-shm。"""
+    import sqlite3
+    from health_by import db as db_module
+
+    # 1. 仅含旧名 fitbit-by.db 且有 1 条未压缩 raw_days
+    legacy_dir = tmp_path / "legacy-only"
+    legacy_dir.mkdir()
+    legacy_db = legacy_dir / "fitbit-by.db"
+    conn = sqlite3.connect(legacy_db)
+    conn.row_factory = sqlite3.Row
+    db_module.migrate(conn)
+    conn.execute(
+        "INSERT INTO raw_days (date, source, fetched_at, payload) VALUES (?, ?, ?, ?)",
+        ("2026-06-01", "google-health", "2026-06-01T00:00:00Z", '{"stepsDaily": {"steps": 123}}'),
+    )
+    conn.commit()
+    conn.close()
+
+    res = run(legacy_dir, "--lang", "en", "db", "compress-raw", "--dry-run")
+    assert res.exit_code == 0, res.output
+    assert "1 to convert" in res.output
+    assert not (legacy_dir / "health-by.db").exists()
+    assert not (legacy_dir / "fitbit-by.db-wal").exists()
+    assert not (legacy_dir / "fitbit-by.db-shm").exists()
+
+    # 2. 正常 WAL 库关闭并完成 checkpoint 后，--dry-run 不产生新的 -wal/-shm 文件
+    wal_dir = tmp_path / "wal-clean"
+    wal_dir.mkdir()
+    wal_db = wal_dir / "health-by.db"
+    conn2 = db_module.connect(wal_db)
+    db_module.migrate(conn2)
+    conn2.execute(
+        "INSERT INTO raw_days (date, source, fetched_at, payload) VALUES (?, ?, ?, ?)",
+        ("2026-06-02", "google-health", "2026-06-02T00:00:00Z", '{"stepsDaily": {"steps": 456}}'),
+    )
+    conn2.commit()
+    conn2.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn2.close()
+    assert not (wal_dir / "health-by.db-wal").exists()
+    assert not (wal_dir / "health-by.db-shm").exists()
+
+    res2 = run(wal_dir, "--lang", "en", "db", "compress-raw", "--dry-run")
+    assert res2.exit_code == 0, res2.output
+    assert "1 to convert" in res2.output
+    assert not (wal_dir / "health-by.db-wal").exists()
+    assert not (wal_dir / "health-by.db-shm").exists()

@@ -46,6 +46,14 @@ export function formatTimestampISO(value) {
   const parts = Object.fromEntries(new Intl.DateTimeFormat(locale, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(value)).map(part => [part.type, part.value]));
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
+export function formatMonthTitle(year, month) {
+  const date = new Date(Date.UTC(year, month - 1, 15));
+  return new Intl.DateTimeFormat(locale, { year: "numeric", month: "long", timeZone: "UTC" }).format(date);
+}
+export function weekdayLabels() {
+  const fmt = new Intl.DateTimeFormat(locale, { weekday: "narrow", timeZone: "UTC" });
+  return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(Date.UTC(2026, 10, 1 + i))));
+}
 
 export function duration(value) {
   if (value === null || value === undefined) return "—";

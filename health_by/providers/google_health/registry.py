@@ -1,4 +1,4 @@
-"""读取任务注册表：31 个任务 → 原始载荷键（与翻译层一一对应）。"""
+"""读取任务注册表：30 个任务 → 原始载荷键（与翻译层一一对应）。"""
 
 from __future__ import annotations
 
@@ -62,7 +62,6 @@ RECORD_JOBS = [
     Job("activitiesRaw", "records", "exercise", "session", page_size=25),
     Job("ecgRaw", "records", "electrocardiogram", "ecg", window="ecg", op="list"),
     Job("irnAlertsRaw", "records", "irregular-rhythm-notification", "session", op="list"),
-    Job("glucoseRaw", "records", "blood-glucose", "sample"),
 ]
 
 INTRADAY_JOBS = [
@@ -72,4 +71,4 @@ INTRADAY_JOBS = [
 
 ALL_JOBS: list[Job] = [*META_JOBS, *ROLLUP_JOBS, *RECORD_JOBS, *INTRADAY_JOBS]
 
-assert len(ALL_JOBS) == 31, t('server.providers.google_health.registry.labels.4edbb96ab', p1=len(ALL_JOBS))  # 与翻译层测试断言保持一致
+assert len(ALL_JOBS) == 30, t('server.providers.google_health.registry.labels.4edbb96ab', p1=len(ALL_JOBS))  # 与翻译层测试断言保持一致

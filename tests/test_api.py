@@ -485,3 +485,125 @@ def test_insights_hides_uncorrected_correlations_by_default(app, client):
     assert debug["correlations_hidden"] == default["correlations_hidden"]
     # 反过来，"剩几条"只对默认视图有意义
     assert len(default["correlations"]) == default["correlations_tested"] - default["correlations_hidden"]
+
+
+# ---------- 安全基线 ----------
+
+
+def test_security_headers_and_openapi_disabled(client):
+    assert client.get("/openapi.json").status_code == 404
+    page = client.get("/")
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store"
+    assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
+    assert page.headers["x-frame-options"] == "DENY"
+    assert page.headers["x-content-type-options"] == "nosniff"
+    assert page.headers["referrer-policy"] == "no-referrer"
+
+    settings_page = client.get("/settings")
+    assert settings_page.status_code == 200
+    assert settings_page.headers["cache-control"] == "no-store"
+
+    css_resp = client.get("/static/css/app.css")
+    assert css_resp.status_code == 200
+    assert css_resp.headers["cache-control"] == "no-cache"
+
+    api_resp = client.get("/api/v1/health")
+    assert api_resp.status_code == 200
+    assert api_resp.headers["cache-control"] == "no-store"
+
+
+def test_host_header_blocks_dns_rebinding_and_allows_opt_in(client, monkeypatch):
+    blocked = client.get("/api/v1/health", headers={"Host": "rebind.evil.example:39441"})
+    assert blocked.status_code == 403
+    assert blocked.headers["x-frame-options"] == "DENY"
+
+    assert client.get("/api/v1/health", headers={"Host": "127.0.0.1:39441"}).status_code == 200
+    assert client.get("/api/v1/health", headers={"Host": "localhost:39441"}).status_code == 200
+
+    monkeypatch.setenv("HEALTH_BY_ALLOWED_HOSTS", "health.tailnet.ts.net")
+    assert client.get("/api/v1/health", headers={"Host": "health.tailnet.ts.net"}).status_code == 200
+
+
+def test_csrf_blocks_cross_origin_requests_and_allows_same_origin(client):
+    for method, path in (
+        ("POST", "/api/v1/disconnect"),
+        ("POST", "/api/v1/sync"),
+        ("POST", "/api/v1/ai/test"),
+        ("GET", "/oauth/start"),
+    ):
+        resp_origin = client.request(method, path, headers={"Origin": "https://evil.example"})
+        assert resp_origin.status_code == 403
+        resp_fetch = client.request(method, path, headers={"Sec-Fetch-Site": "cross-site"})
+        assert resp_fetch.status_code == 403
+
+    same_origin = client.post(
+        "/api/v1/sync",
+        json={"date": DAY},
+        headers={"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"},
+    )
+    assert same_origin.status_code == 200
+
+
+def test_partial_goals_merge_validation_sync_days_validation_and_clear_vs_inflight(app, client, monkeypatch):
+    import threading
+    import time
+    from devtools.gen_demo_data import SyntheticProvider
+    from health_by.providers import PROVIDERS, ensure_builtin_providers
+
+    # 1. 部分更新 goals 时保留已有自定义项
+    assert client.post("/api/v1/settings", json={"goals": {"steps": 9000, "sleep_minutes": 450}}).status_code == 200
+    resp = client.post("/api/v1/settings", json={"goals": {"steps": 12000}})
+    assert resp.status_code == 200
+    assert resp.json()["goals"] == {"steps": 12000, "sleep_minutes": 450}
+
+    # 2. 小数、布尔、非法数均返回 400
+    for bad_payload in (
+        {"goals": {"steps": 0.5}},
+        {"goals": {"steps": True}},
+        {"goals": {"sleep_minutes": 420.5}},
+        {"sync_interval_minutes": 1.5},
+        {"sync_interval_minutes": True},
+    ):
+        assert client.post("/api/v1/settings", json=bad_payload).status_code == 400
+
+    # 3. /api/v1/sync 对非整型 days 返回 400（不 500）
+    for bad_sync in ({"days": "abc"}, {"days": 1.5}, {"days": -3}, {"days": True}):
+        assert client.post("/api/v1/sync", json=bad_sync).status_code == 400
+
+    # 4. /api/v1/data/clear 能拦住 3 天排队批次中的在途与未开始日期，并清空 /api/v1/status.last_result
+    base = SyntheticProvider()
+    d1, d2, d3 = shift_iso(DAY, -2), shift_iso(DAY, -1), DAY
+    started_lock = threading.Lock()
+    started = []
+    two_entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingThree(SyntheticProvider):
+        def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
+            with started_lock:
+                started.append(date)
+                if len(started) >= 2:
+                    two_entered.set()
+            if date in (d1, d2):
+                release.wait(timeout=10)
+            return base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", BlockingThree())
+    app.state.engine.workers = 2
+
+    assert client.post("/api/v1/sync", json={"start": d1, "end": d3}).status_code == 200
+    assert two_entered.wait(timeout=5)
+    clear_resp = client.post("/api/v1/data/clear", json={"confirm": "DELETE ALL DATA"})
+    assert clear_resp.status_code == 200
+    release.set()
+
+    deadline = time.monotonic() + 10
+    while app.state.engine.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert storage.count_days(app.state.conn) == 0
+    assert d3 not in started
+    status_after = client.get("/api/v1/status").json()
+    assert status_after["days_stored"] == 0
+    assert status_after["sync"]["last_result"] is None

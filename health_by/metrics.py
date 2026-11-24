@@ -36,6 +36,32 @@ def to_float(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+BOUNDS: dict[str, tuple[float, float]] = {
+    "sleep_minutes": (0, 960),
+    "sleep_efficiency": (0, 100),
+    "resting_hr": (25, 220),
+    "hrv_ms": (5, 250),
+    "spo2": (50, 100),
+    "breathing_rate": (4, 40),
+    "weight_kg": (20, 300),
+    "body_fat": (1, 70),
+}
+ZERO_IS_MISSING_METRICS = frozenset({"resting_hr", "hrv_ms", "breathing_rate", "spo2"})
+
+
+def in_bounds(key: str, value: Any) -> float | None:
+    """将输入清洗为浮点数，并按生理边界及零值语义过滤无效读数。"""
+    num = to_float(value)
+    if num is None:
+        return None
+    if key in ZERO_IS_MISSING_METRICS and num == 0:
+        return None
+    bounds = BOUNDS.get(key)
+    if bounds is not None and not (bounds[0] <= num <= bounds[1]):
+        return None
+    return num
+
+
 def mean_sd(values: Iterable[float]) -> tuple[float | None, float | None]:
     items = [v for v in values if v is not None]
     if not items:
@@ -121,15 +147,31 @@ def baseline_stats(
         start = end - timedelta(days=window - 1)
     except ValueError:
         return empty
-    by_date = {str(row.get("date")): to_float(row.get(key)) for row in series
-               if start.isoformat() <= str(row.get("date") or "") <= end.isoformat()}
-    dated = sorted((day, value) for day, value in by_date.items() if value is not None)
-    # 对物理上应为正数的四项，零可作为“无读数”证据；皮温差、行为量和其它字段的零保持有效。
-    appearance = field_appears(sorted(by_date.items()), zero_is_missing=key in {
-        "resting_hr", "hrv_ms", "breathing_rate", "spo2",
-    })
-    valid_from = max(start.isoformat(), appearance) if appearance else start.isoformat()
-    values = [value for day, value in dated if day >= valid_from]
+    end_iso = end.isoformat()
+    start_iso = start.isoformat()
+    # 先在完整历史区间上清洗越界值与物理正值指标的 0.0，同时保留前置历史供 field_appears() 检查，
+    # 防止传感器启用 22 天后历史缺测窗跌破 7 天触发滞后悬崖。
+    full_by_date: dict[str, float | None] = {}
+    for row in series:
+        raw_date = row.get("date")
+        if not isinstance(raw_date, str):
+            continue
+        try:
+            iso_day = date_type.fromisoformat(raw_date).isoformat()
+        except ValueError:
+            continue
+        if iso_day <= end_iso:
+            full_by_date[iso_day] = in_bounds(key, row.get(key))
+    zero_is_missing = key in ZERO_IS_MISSING_METRICS
+    raw_appearance = field_appears(sorted(full_by_date.items()), zero_is_missing=zero_is_missing)
+    # 只有首现日期落在当前基线窗口之内或起点当天时，才展示为被截断的起点。
+    appearance = raw_appearance if raw_appearance and raw_appearance >= start_iso else None
+    valid_from = max(start_iso, raw_appearance) if raw_appearance else start_iso
+    values = [
+        value
+        for day, value in sorted(full_by_date.items())
+        if valid_from <= day <= end_iso and value is not None
+    ]
     context = {"valid_from": valid_from, "break": None, "field_appearance": appearance}
     if len(values) < BASELINE_MIN_SAMPLES:
         return {**empty, **context, "sample_count": len(values),
@@ -171,7 +213,45 @@ def swc(values: Iterable[float]) -> float | None:
 _R_CLAMP = 0.999999
 
 
-def fisher_ci(r: float | None, n: int, z: float = 1.959964) -> tuple[float | None, float | None]:
+def _lag1_autocorrelation(pairs: list[tuple[str, float]]) -> float:
+    """按连续日历日估算一阶自相关 ρ₁，样本不足时返回 0。"""
+    xs: list[float] = []
+    ys: list[float] = []
+    for (day_a, val_a), (day_b, val_b) in zip(pairs, pairs[1:]):
+        try:
+            delta = (date_type.fromisoformat(day_b) - date_type.fromisoformat(day_a)).days
+        except ValueError:
+            continue
+        if delta == 1:
+            xs.append(val_a)
+            ys.append(val_b)
+    if len(xs) < 4:
+        return 0.0
+    mx = mean(xs)
+    my = mean(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if sxx <= 0 or syy <= 0:
+        return 0.0
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    return sxy / math.sqrt(sxx * syy)
+
+
+def effective_sample_size(dates: list[str], xs: list[float], ys: list[float]) -> float:
+    """Bartlett 有效样本量校正，缓解日度健康指标强自相关导致的 Fisher z 假阳性。"""
+    n = len(xs)
+    if n <= 3 or len(dates) != n or len(ys) != n:
+        return float(n)
+    rx = _lag1_autocorrelation(list(zip(dates, xs)))
+    ry = _lag1_autocorrelation(list(zip(dates, ys)))
+    product = rx * ry
+    if product <= 0:
+        return float(n)
+    product = min(0.95, product)
+    return n * (1.0 - product) / (1.0 + product)
+
+
+def fisher_ci(r: float | None, n: int | float, z: float = 1.959964) -> tuple[float | None, float | None]:
     """相关系数的 Fisher z 变换 95% 置信区间。
 
     `|r| = 1` 时 `atanh` 发散，原先直接返回 `(None, None)`；但那样一来
@@ -207,7 +287,7 @@ def normal_quantile(p: float) -> float:
     return (low + high) / 2
 
 
-def correlation_is_significant(r: float | None, n: int, alpha: float = 0.05) -> bool:
+def correlation_is_significant(r: float | None, n: int | float, alpha: float = 0.05) -> bool:
     """相关系数是否显著（Fisher z 检验，双尾）。
 
     注意：`alpha` 应当已经做过多重比较校正（Bonferroni 用 α/检验次数）。
@@ -285,7 +365,30 @@ def sri(days: list[dict], *, bin_minutes: int = 15, max_pairs: int = 28) -> dict
     100 = 完全一致；0 = 与随机无异；负值 = 比随机更不一致。
     """
     bins_by_date = sleep_bins_by_date(days, bin_minutes)
-    dates = sorted(bins_by_date)
+    start_dates: list[str] = []
+    end_dates: list[str] = []
+    for day in days:
+        sleep = day.get("sleep") or {}
+        session_starts: list[datetime] = []
+        session_ends: list[datetime] = []
+        for segment in sleep.get("stage_timeline") or []:
+            if segment.get("stage") == "wake":
+                continue
+            start = _parse_iso(segment.get("start"))
+            end = _parse_iso(segment.get("end"))
+            if start is None or end is None or end <= start:
+                continue
+            session_starts.append(start)
+            session_ends.append(end)
+        # 按整次睡眠会话的起止时间定首尾完整观测日，不因把同一夜拆成多段而改变比较边界与配对数。
+        if session_starts and session_ends:
+            start_dates.append(min(session_starts).date().isoformat())
+            end_dates.append(max(session_ends).date().isoformat())
+    if not start_dates:
+        return {"value": None, "pairs": 0, "sleep_fraction": None}
+    min_end_date = min(end_dates)
+    max_start_date = max(start_dates)
+    dates = [day for day in sorted(bins_by_date) if min_end_date <= day <= max_start_date]
     pairs: list[tuple[str, str]] = []
     for earlier, later in zip(dates, dates[1:]):
         if (date_type.fromisoformat(later) - date_type.fromisoformat(earlier)).days == 1:
@@ -315,37 +418,64 @@ def sri(days: list[dict], *, bin_minutes: int = 15, max_pairs: int = 28) -> dict
     }
 
 
+def _circular_mean_hours(hours: list[float]) -> float:
+    """24 小时制环形均值（返回 [0, 24) 区间的小时数），避免 18:00 或 00:00 人为截断跳变。"""
+    sin_sum = sum(math.sin(2 * math.pi * (h % 24.0) / 24.0) for h in hours)
+    cos_sum = sum(math.cos(2 * math.pi * (h % 24.0) / 24.0) for h in hours)
+    if abs(sin_sum) < 1e-12 and abs(cos_sum) < 1e-12:
+        return hours[0] % 24.0
+    return (math.atan2(sin_sum, cos_sum) * 24.0 / (2 * math.pi)) % 24.0
+
+
+def _unwrap_around(hours: list[float], center: float) -> list[float]:
+    """将一组 24 小时时刻围绕个人中心展开到 [center - 12, center + 12) 连续实数轴。"""
+    return [center + (((h - center + 12.0) % 24.0) - 12.0) for h in hours]
+
+
 def sleep_timing(days: list[dict]) -> dict[str, Any]:
-    """入睡/起床/睡眠中点的分布，以及工作日与自由日的社交时差。"""
-    midpoints: list[float] = []
-    beds: list[float] = []
-    wakes: list[float] = []
-    work: list[float] = []
-    free: list[float] = []
+    """入睡/起床/睡眠中点的分布，以及工作日与自由日的社交时差（基于环形中心展开）。"""
+    mid_mods: list[float] = []
+    bed_mods: list[float] = []
+    wake_mods: list[float] = []
+    work_indices: list[int] = []
+    free_indices: list[int] = []
     for day in days:
         sleep = day.get("sleep") or {}
         start = _parse_iso(sleep.get("start_time"))
         end = _parse_iso(sleep.get("end_time"))
         date_value = day.get("date")
-        if start is None or end is None or not date_value:
+        if start is None or end is None or end <= start or not date_value:
             continue
-        bed = start.hour + start.minute / 60
-        if bed < 12:
-            bed += 24
-        wake = end.hour + end.minute / 60
-        if wake < 12:
-            wake += 24
-        midpoint = (bed + wake) / 2
-        if midpoint >= 36:
-            midpoint -= 24
-        beds.append(bed)
-        wakes.append(wake)
-        midpoints.append(midpoint)
+        duration_hours = (end - start).total_seconds() / 3600
+        if duration_hours > 24:
+            continue
+        bed_mod = (start.hour + start.minute / 60 + start.second / 3600) % 24.0
+        wake_mod = (bed_mod + duration_hours) % 24.0
+        mid_mod = (bed_mod + duration_hours / 2.0) % 24.0
+        idx = len(mid_mods)
+        bed_mods.append(bed_mod)
+        wake_mods.append(wake_mod)
+        mid_mods.append(mid_mod)
         try:
             weekday = date_type.fromisoformat(str(date_value)).weekday()
         except ValueError:
             continue
-        (free if weekday >= 5 else work).append(midpoint)
+        (free_indices if weekday >= 5 else work_indices).append(idx)
+
+    if not mid_mods:
+        return {
+            "midpoint_mean": None,
+            "midpoint_sd_min": None,
+            "bed_sd_min": None,
+            "wake_sd_min": None,
+            "social_jetlag_min": None,
+            "n_nights": 0,
+        }
+
+    bed_unwrapped = _unwrap_around(bed_mods, _circular_mean_hours(bed_mods))
+    wake_unwrapped = _unwrap_around(wake_mods, _circular_mean_hours(wake_mods))
+    mid_center = _circular_mean_hours(mid_mods)
+    mid_unwrapped = _unwrap_around(mid_mods, mid_center)
 
     def spread(values: list[float]) -> float | None:
         if len(values) < 3:
@@ -353,26 +483,45 @@ def sleep_timing(days: list[dict]) -> dict[str, Any]:
         return round(pstdev(values) * 60)
 
     social_jetlag = None
-    if len(work) >= 3 and len(free) >= 2:
-        social_jetlag = round(abs(mean(free) - mean(work)) * 60)
+    if len(work_indices) >= 3 and len(free_indices) >= 2:
+        work_mean = mean(mid_unwrapped[i] for i in work_indices)
+        free_mean = mean(mid_unwrapped[i] for i in free_indices)
+        social_jetlag = round(abs(free_mean - work_mean) * 60)
+
+    mean_mid_clock = mean(mid_unwrapped) % 24.0
+    midpoint_display = mean_mid_clock + 24.0 if mean_mid_clock < 18.0 else mean_mid_clock
 
     return {
-        "midpoint_mean": round(mean(midpoints), 2) if midpoints else None,
-        "midpoint_sd_min": spread(midpoints),
-        "bed_sd_min": spread(beds),
-        "wake_sd_min": spread(wakes),
+        "midpoint_mean": round(midpoint_display, 2),
+        "midpoint_sd_min": spread(mid_unwrapped),
+        "bed_sd_min": spread(bed_unwrapped),
+        "wake_sd_min": spread(wake_unwrapped),
         "social_jetlag_min": social_jetlag,
-        "n_nights": len(midpoints),
+        "n_nights": len(mid_mods),
     }
 
 
 def sleep_debt(days: list[dict], need_minutes: float = 480, window: int = 7) -> dict[str, Any]:
-    """最近 N 天的累计睡眠缺口（仅统计有睡眠记录的夜晚，并回报覆盖天数）。"""
-    recent = days[-window:]
+    """最近 N 个日历日的累计睡眠缺口（仅统计有睡眠记录的夜晚，并回报覆盖天数）。"""
+    dated_rows: list[tuple[date_type, dict]] = []
+    for day in days:
+        raw_date = day.get("date") if isinstance(day, dict) else None
+        if not raw_date:
+            continue
+        try:
+            dated_rows.append((date_type.fromisoformat(str(raw_date)), day))
+        except ValueError:
+            continue
+    if dated_rows:
+        end_date = max(d for d, _ in dated_rows)
+        start_date = end_date - timedelta(days=max(1, window) - 1)
+        recent = [day for d, day in dated_rows if start_date <= d <= end_date]
+    else:
+        recent = days[-window:]
     deficits: list[float] = []
     total = 0.0
     for day in recent:
-        minutes = to_float((day.get("sleep") or {}).get("total_minutes"))
+        minutes = in_bounds("sleep_minutes", (day.get("sleep") or {}).get("total_minutes"))
         if minutes is None:
             continue
         deficit = max(0.0, need_minutes - minutes)
@@ -393,6 +542,7 @@ def hourly_activity(days: list[dict], hours: int = 24) -> list[float | None]:
     totals = [0.0] * hours
     counts = [0] * hours
     for day in days:
+        day_totals: dict[int, float] = {}
         for point in (day.get("activity") or {}).get("steps_intraday") or []:
             raw_time = str(point.get("time") or "")
             if len(raw_time) < 2 or not raw_time[:2].isdigit():
@@ -401,6 +551,8 @@ def hourly_activity(days: list[dict], hours: int = 24) -> list[float | None]:
             value = to_float(point.get("value"))
             if value is None or not (0 <= hour < hours):
                 continue
+            day_totals[hour] = day_totals.get(hour, 0.0) + value
+        for hour, value in day_totals.items():
             totals[hour] += value
             counts[hour] += 1
     return [round(totals[h] / counts[h]) if counts[h] else None for h in range(hours)]
@@ -440,7 +592,7 @@ def cosinor(hourly: list[float | None]) -> dict[str, Any]:
         return {"mesor": None, "amplitude": None, "acrophase_hour": None, "r2": None, "usable": False}
     values = [value for _, value in points]
     design = [
-        [1.0, math.cos(2 * math.pi * hour / 24), math.sin(2 * math.pi * hour / 24)]
+        [1.0, math.cos(2 * math.pi * (hour + 0.5) / 24), math.sin(2 * math.pi * (hour + 0.5) / 24)]
         for hour, _ in points
     ]
     normal = [

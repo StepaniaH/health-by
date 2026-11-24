@@ -209,6 +209,24 @@ def test_build_filter_shapes():
     assert "daily_resting_heart_rate" in gh.build_filter("daily-resting-heart-rate", "daily", "a", "b")
 
 
+def test_non_json_or_non_dict_200_response_raises_provider_error():
+    import httpx
+
+    html_client = gh.GoogleHealthClient(
+        make_http(lambda req: httpx.Response(200, text="<html>gateway</html>")),
+        pace_ms=0,
+    )
+    with pytest.raises(ProviderError):
+        html_client.request("GET", "/v4/users/me/identity", token="tok")
+
+    list_client = gh.GoogleHealthClient(
+        make_http(lambda req: httpx.Response(200, json=[1, 2, 3])),
+        pace_ms=0,
+    )
+    with pytest.raises(ProviderError):
+        list_client.request("GET", "/v4/users/me/identity", token="tok")
+
+
 # ---------- provider ----------
 
 
@@ -237,8 +255,8 @@ def test_fetch_raw_runs_all_jobs_and_collects_errors():
         credentials={"tokens": {"access_token": "tok"}},
         http=make_http(_routing_handler(fail_sleep=True)),
     )
-    assert raw.stats["total"] == 31
-    assert raw.stats["succeeded"] == 30
+    assert raw.stats["total"] == 30
+    assert raw.stats["succeeded"] == 29
     assert "sleepRaw" not in raw.payload
     assert raw.errors == [{"key": "sleepRaw", "message": "sleep unavailable", "status": 403}]
     snapshot = provider.translate(raw)
@@ -255,8 +273,8 @@ def test_fetch_raw_reports_progress():
         http=make_http(_routing_handler()),
         on_progress=lambda completed, total, key: seen.append((completed, total)),
     )
-    assert seen[-1] == (31, 31)
-    assert len(seen) == 31
+    assert seen[-1] == (30, 30)
+    assert len(seen) == 30
 
 
 def test_fetch_raw_aborts_on_401():

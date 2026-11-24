@@ -115,3 +115,169 @@ def test_fisher_ci_and_strength():
     assert strength_label(0.7) == "强"
     assert strength_label(0.1) == "很弱"
     assert swc([10, 10, 10, 10]) == 0.0
+
+
+def test_hourly_activity_aggregates_per_day_hour_and_cosinor_centers_bins():
+    import math
+
+    days = [
+        {
+            "activity": {
+                "steps_intraday": [
+                    *([{"time": "09:00", "value": 100}] * 10),
+                    {"time": "02:00", "value": 200},
+                ]
+            }
+        }
+    ]
+    hourly = hourly_activity(days)
+    assert hourly[9] == 1000
+    assert hourly[2] == 200
+
+    # Peak placed at bin midpoint 15.5 (15:30) is recovered cleanly.
+    cos_hourly: list[float | None] = [
+        100.0 + 50.0 * math.cos(2 * math.pi * ((hour + 0.5) - 15.5) / 24)
+        for hour in range(24)
+    ]
+    result = cosinor(cos_hourly)
+    assert result["acrophase_hour"] == 15.5
+    assert result["r2"] == 1.0
+
+
+def test_sri_handles_midnight_crossing_without_boundary_bias():
+    nights = [_sleep_day(f"2026-10-{day:02d}", 23, 7) for day in range(1, 16)]
+    result = sri(nights)
+    assert result["value"] == 100.0
+    assert result["pairs"] == 13
+
+    single = sri([_sleep_day("2026-10-01", 23, 7)])
+    assert single["value"] is None
+    assert single["pairs"] == 0
+
+
+def test_sleep_timing_handles_afternoon_wakes_without_wrap():
+    days = []
+    start = date(2026, 9, 28)  # Monday
+    for index in range(7):
+        current = start + timedelta(days=index)
+        if current.weekday() >= 5:
+            days.append(
+                {
+                    "date": current.isoformat(),
+                    "sleep": {
+                        "start_time": f"{current.isoformat()}T03:00:00+08:00",
+                        "end_time": f"{current.isoformat()}T12:30:00+08:00",
+                    },
+                }
+            )
+        else:
+            days.append(_sleep_day(current.isoformat(), 23, 7))
+    timing = sleep_timing(days)
+    assert timing["social_jetlag_min"] == 285
+    assert timing["wake_sd_min"] is not None and timing["wake_sd_min"] < 200
+
+
+
+def test_bounds_zero_as_missing_and_full_history_field_appears():
+    from health_by.metrics import baseline_stats, in_bounds, ZERO_IS_MISSING_METRICS
+
+    assert "hrv_ms" in ZERO_IS_MISSING_METRICS
+    assert in_bounds("hrv_ms", 0) is None
+    assert in_bounds("hrv_ms", 42) == 42
+    assert in_bounds("steps", 0) == 0
+    assert in_bounds("resting_hr", 221) is None
+
+    # 窗口前连续存在 8 天零值/越界读数（应先被过滤掉，不影响 field_appears），真正有效首现发生在基线窗口内
+    start = date(2026, 9, 2)
+    series = [
+        {"date": (start - timedelta(days=d)).isoformat(), "hrv_ms": 0.0 if d % 2 else 500.0}
+        for d in range(8, 0, -1)
+    ]
+    for i in range(25):
+        series.append({"date": (start + timedelta(days=i)).isoformat(), "hrv_ms": 45.0 + (i % 3)})
+    target = (start + timedelta(days=25)).isoformat()
+    stats = baseline_stats(series, "hrv_ms", end_date=target)
+    assert stats["sample_count"] == 25
+    assert stats["field_appearance"] == start.isoformat()
+    assert stats["valid_from"] == start.isoformat()
+
+
+def test_sleep_debt_uses_calendar_window_and_bartlett_rejects_autocorrelated_trend():
+    from health_by.insights import pearson
+    from health_by.metrics import correlation_is_significant, effective_sample_size, sleep_debt
+
+    # 隔天缺失仍按日历 14 天切片，而不是取最近 14 条记录
+    days = [
+        {"date": "2026-10-01", "sleep": {"total_minutes": 300}},
+        {"date": "2026-10-10", "sleep": {"total_minutes": 420}},
+        {"date": "2026-10-20", "sleep": {"total_minutes": 420}},
+    ]
+    debt = sleep_debt(days, 480, window=14)
+    # 截止 2026-10-20 的 14 天窗口为 2026-10-07..10-20，仅含 10-10 与 10-20 两晚（各少 60 分钟）
+    assert debt["nights"] == 2 and debt["minutes"] == 120
+
+    # 高度自相关的线性趋势：Bartlett 校正显著压低 n_eff，避免伪显著
+    dates = [(date(2026, 9, 1) + timedelta(days=i)).isoformat() for i in range(30)]
+    xs = [float(i) for i in range(1, 31)]
+    ys = [100.0 + 2.0 * i for i in range(1, 31)]
+    r = pearson(xs, ys)
+    assert abs(r - 1.0) < 1e-9
+    n_eff = effective_sample_size(dates, xs, ys)
+    assert n_eff < 10
+    assert correlation_is_significant(0.6, len(xs), alpha=0.05 / 12) is True
+    assert correlation_is_significant(0.6, n_eff, alpha=0.05 / 12) is False
+
+
+def test_sri_invariant_to_segment_splitting_and_sleep_timing_handles_18h_boundary():
+    """同一晚睡眠拆成多段不改变 SRI；17:55 与 18:05 入睡的环形统计不产生 1430 分钟跳变。"""
+    # 1. SRI 拆段不变性：连续 6 晚 23:00-07:00，单段 vs 每晚拆成 3 段
+    single_seg_days = []
+    split_seg_days = []
+    for i in range(6):
+        wake_day = date(2026, 6, 2) + timedelta(days=i)
+        bed_day = wake_day - timedelta(days=1)
+        single_seg_days.append(
+            {
+                "date": wake_day.isoformat(),
+                "sleep": {
+                    "start_time": f"{bed_day.isoformat()}T23:00:00+08:00",
+                    "end_time": f"{wake_day.isoformat()}T07:00:00+08:00",
+                    "stage_timeline": [
+                        {"start": f"{bed_day.isoformat()}T23:00:00+08:00", "end": f"{wake_day.isoformat()}T07:00:00+08:00", "stage": "light"}
+                    ],
+                },
+            }
+        )
+        split_seg_days.append(
+            {
+                "date": wake_day.isoformat(),
+                "sleep": {
+                    "start_time": f"{bed_day.isoformat()}T23:00:00+08:00",
+                    "end_time": f"{wake_day.isoformat()}T07:00:00+08:00",
+                    "stage_timeline": [
+                        {"start": f"{bed_day.isoformat()}T23:00:00+08:00", "end": f"{wake_day.isoformat()}T01:00:00+08:00", "stage": "light"},
+                        {"start": f"{wake_day.isoformat()}T01:00:00+08:00", "end": f"{wake_day.isoformat()}T04:00:00+08:00", "stage": "deep"},
+                        {"start": f"{wake_day.isoformat()}T04:00:00+08:00", "end": f"{wake_day.isoformat()}T07:00:00+08:00", "stage": "rem"},
+                    ],
+                },
+            }
+        )
+    sri_single = sri(single_seg_days)
+    sri_split = sri(split_seg_days)
+    assert sri_single["value"] == 100.0
+    assert sri_split["value"] == 100.0
+    assert sri_split["pairs"] == sri_single["pairs"] == 4
+
+    # 2. 18:00 截断边界回归：工作日 17:55-01:55 vs 周末 18:05-02:05，仅差 10 分钟
+    timing_days = []
+    start_day = date(2026, 6, 1)  # Monday
+    for i in range(14):
+        wake_day = start_day + timedelta(days=i)
+        bed_day = wake_day - timedelta(days=1)
+        is_weekend = wake_day.weekday() >= 5
+        bed_str = f"{bed_day.isoformat()}T18:05:00+08:00" if is_weekend else f"{bed_day.isoformat()}T17:55:00+08:00"
+        wake_str = f"{wake_day.isoformat()}T02:05:00+08:00" if is_weekend else f"{wake_day.isoformat()}T01:55:00+08:00"
+        timing_days.append({"date": wake_day.isoformat(), "sleep": {"start_time": bed_str, "end_time": wake_str}})
+    timing = sleep_timing(timing_days)
+    assert timing["social_jetlag_min"] == 10
+    assert timing["bed_sd_min"] is not None and timing["bed_sd_min"] <= 10

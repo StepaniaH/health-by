@@ -12,13 +12,22 @@ import threading
 import time
 from contextlib import closing
 from datetime import date as date_type
+from urllib.parse import urlsplit
 
 from .. import analysis as analysis_module, db, insights as insights_module, metrics, reliability, storage
 from ..config import Config
 from ..secrets import SecretError, SecretStore
-from ..util import iso_range, iso_today, utc_now_iso
+from ..util import iso_range, iso_today, shift_iso, utc_now_iso
 from . import prompt, schema
-from .client import AIClient, AIError, AI_ERROR_TEXT, USER_AGENT, ANALYSIS_MAX_TOKENS, validate_base_url
+from .client import (
+    AIClient,
+    AIError,
+    AI_ERROR_TEXT,
+    ANALYSIS_MAX_TOKENS,
+    USER_AGENT,
+    validate_base_url,
+    validate_endpoint_security,
+)
 from .validation import RULES_VERSION, validate_output
 
 
@@ -144,6 +153,16 @@ DUAL_FIELDS = {
     ("heart", "breathing_rate"): "breathing_rate", ("heart", "spo2"): "spo2",
     ("heart", "skin_temp_delta_c"): "skin_temp_delta",
 }
+BOUNDED_DAY_FIELDS = {
+    ("sleep", "total_minutes"): "sleep_minutes",
+    ("sleep", "efficiency"): "sleep_efficiency",
+    ("heart", "resting_hr"): "resting_hr",
+    ("heart", "hrv_ms"): "hrv_ms",
+    ("heart", "spo2"): "spo2",
+    ("heart", "breathing_rate"): "breathing_rate",
+    ("body", "weight_kg"): "weight_kg",
+    ("body", "body_fat_pct"): "body_fat",
+}
 
 
 def build_payload(day: dict, goals: dict, analysis: dict, insights: dict, *,
@@ -152,10 +171,10 @@ def build_payload(day: dict, goals: dict, analysis: dict, insights: dict, *,
     payload = _legacy_payload(day, goals, analysis, insights, today=today)
     observations = {item["date"]: item for item in (history or []) if isinstance(item, dict) and "date" in item}
     observations[day["date"]] = day  # 当前日快照为所选日的权威读数。
-    readings = [(selected, {key: metrics.to_float(value) for key, value in analysis_module.comparison_values(item).items()})
+    readings = [(selected, {key: metrics.in_bounds(key, value) for key, value in analysis_module.comparison_values(item).items()})
                 for selected, item in observations.items()]
     averages = reliability.calendar_averages(readings, day["date"])
-    daily = {key: metrics.to_float(value) for key, value in analysis_module.comparison_values(day).items()}
+    daily = {key: metrics.in_bounds(key, value) for key, value in analysis_module.comparison_values(day).items()}
 
     def rename(value, path=()):
         if isinstance(value, dict):
@@ -164,7 +183,9 @@ def build_payload(day: dict, goals: dict, analysis: dict, insights: dict, *,
                 if isinstance(child, dict):
                     result[key] = rename(child, (*path, key))
                 else:
-                    result[key + "_today"] = child
+                    bounded_key = BOUNDED_DAY_FIELDS.get((*path, key))
+                    sanitized = metrics.in_bounds(bounded_key, child) if bounded_key else child
+                    result[key + "_today"] = sanitized
                     metric = DUAL_FIELDS.get((*path, key))
                     if metric:
                         result[key + "_7d"] = averages[metric]
@@ -270,7 +291,21 @@ def build_window_payload(days: list[dict], goals: dict, start: str, end: str, *,
         low = min(known, key=lambda item: item[1]) if known else None
         high = max(known, key=lambda item: item[1]) if known else None
         first, last = (known[0], known[-1]) if known else (None, None)
-        delta = last[1] - first[1] if len(known) >= 2 else None
+        if len(known) >= 3:
+            split = len(known) // 2
+            first_half = sorted(value for _, value in known[:split])
+            second_half = sorted(value for _, value in known[-split:])
+            first_med = mean(first_half[(len(first_half) - 1) // 2 : len(first_half) // 2 + 1])
+            second_med = mean(second_half[(len(second_half) - 1) // 2 : len(second_half) // 2 + 1])
+            delta = second_med - first_med
+            baseline = max(abs(first_med), 1e-9)
+            flat_threshold = 0.01 * baseline if len(known) >= 6 else 0.0
+            direction = "up" if delta > flat_threshold else "down" if delta < -flat_threshold else "flat"
+        elif len(known) == 2:
+            delta = last[1] - first[1]
+            direction = "up" if delta > 0 else "down" if delta < 0 else "flat"
+        else:
+            direction = None
         return {
             'mean': round(mean(value for _, value in known), 4) if known else None,
             'median': round(mean(sorted(value for _, value in known)[(len(known)-1)//2:len(known)//2+1]), 4) if known else None,
@@ -281,7 +316,7 @@ def build_window_payload(days: list[dict], goals: dict, start: str, end: str, *,
             'max_missing_streak': _missing_streak(values), 'excluded_days': excluded,
             'trend': {
                 'first': first[1] if first else None, 'last': last[1] if last else None,
-                'direction': ('up' if delta > 0 else 'down' if delta < 0 else 'flat') if delta is not None else None,
+                'direction': direction,
             },
         }
 
@@ -362,6 +397,14 @@ class AIService:
             "payload_schema_version": schema.DAILY_SCHEMA_VERSION, "window_payload_schema_version": schema.WINDOW_SCHEMA_VERSION,
         }
 
+    @staticmethod
+    def _url_origin(url: str) -> tuple[str, str, int]:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        hostname = (parts.hostname or "").lower().rstrip(".")
+        port = parts.port or (443 if scheme == "https" else 80)
+        return scheme, hostname, port
+
     def configure(self, conn, patch: dict) -> dict:
         current = storage.load_settings(conn)
         enabled = patch.get("ai_enabled", current["ai_enabled"])
@@ -381,13 +424,21 @@ class AIService:
             raise AIError(t('server.ai.service.configure.83740ba43'))
         if any(ord(char) < 33 or ord(char) > 126 for char in key.strip()):
             raise AIError(t('server.ai.service.configure.81a79eaeb'))
+        try:
+            old_base_url = validate_base_url(str(current["ai_base_url"]))
+            host_changed = self._url_origin(old_base_url) != self._url_origin(base_url)
+        except AIError:
+            host_changed = True
         encrypted = self.secrets.encrypt_json({"api_key": key.strip()}) if key.strip() else None
+        will_clear = clear or (host_changed and not encrypted)
+        effective_has_key = bool(encrypted) or (not will_clear and bool(storage.load_credentials_raw(conn, "ai")))
+        validate_endpoint_security(base_url, has_api_key=effective_has_key)
         with conn:
             conn.executemany("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", [
                 ("ai_enabled", json.dumps(enabled)), ("ai_base_url", json.dumps(base_url)),
                 ("ai_model", json.dumps(model)),
             ])
-            if clear:
+            if will_clear:
                 conn.execute("DELETE FROM credentials WHERE provider = 'ai'")
             elif encrypted:
                 conn.execute("INSERT OR REPLACE INTO credentials (provider, data, updated_at) VALUES ('ai', ?, ?)",
@@ -488,11 +539,23 @@ class AIService:
                 goals = settings.get("goals") or {}
                 if start == end:
                     day = storage.get_day(conn, end)
-                    history = storage.get_day_window(conn, end, 30)
-                    trends = storage.get_trends(conn, end, metrics.BASELINE_WINDOW_DAYS + 1)
-                    payload = build_payload(day, goals, analysis_module.build_analysis(day, trends, goals),
-                                            insights_module.build_insights(history, goals, end_date=end, window_days=30),
-                                            history=history)
+                    history_lookback = storage.get_day_window(conn, end, 30 + metrics.BASELINE_WINDOW_DAYS + 7)
+                    cutoff_30 = shift_iso(end, -29) if len(history_lookback) else ""
+                    history = [item for item in history_lookback if str(item.get("date") or "") >= cutoff_30]
+                    trends = storage.get_trends(conn, end, metrics.BASELINE_WINDOW_DAYS + 8)
+                    payload = build_payload(
+                        day,
+                        goals,
+                        analysis_module.build_analysis(day, trends, goals),
+                        insights_module.build_insights(
+                            history,
+                            goals,
+                            end_date=end,
+                            window_days=30,
+                            history_days=history_lookback,
+                        ),
+                        history=history_lookback,
+                    )
                 else:
                     payload = build_window_payload(days, goals, start, end)
                 audit = payload_audit(payload)
@@ -549,17 +612,27 @@ class AIService:
                 validation.update(finish_reason=finish_reason, truncated=finish_reason == "length", max_tokens=ANALYSIS_MAX_TOKENS)
                 if finish_reason == "length":
                     validation["state"] = "failed"
-                    validation["issues"] = [{"section": "output", "text": "", "reason":
-                        t('server.ai.service.analyze.d1f7108f6', ANALYSIS_MAX_TOKENS=ANALYSIS_MAX_TOKENS)}]
+                    validation["issues"] = [{
+                        "section": "output",
+                        "code": "truncated",
+                        "text": "",
+                        "reason": t('server.ai.service.analyze.d1f7108f6', ANALYSIS_MAX_TOKENS=ANALYSIS_MAX_TOKENS),
+                    }]
                     validation["warnings"] = []
                 if validation["state"] != "failed" or attempt == 2:
                     break
+                repair_items = (
+                    [prompt.TRUNCATION_REPAIR_NOTE]
+                    if finish_reason == "length"
+                    else [
+                        t('server.ai.service.analyze.12d0a887b', p1=item['section'], p2=item['reason'], p3=item['text'])
+                        for item in validation["issues"]
+                    ]
+                )
                 with using_language("zh", group_numbers=False):
                     messages += [
                         {"role": "assistant", "content": text},
-                        {"role": "user", "content": prompt.build_repair_message([
-                            t('server.ai.service.analyze.12d0a887b', p1=item['section'], p2=item['reason'], p3=item['text']) for item in validation["issues"]
-                        ])},
+                        {"role": "user", "content": prompt.build_repair_message(repair_items)},
                     ]
             validation["attempt_finish_reasons"] = finish_reasons
             validated_at = utc_now_iso()

@@ -251,7 +251,6 @@ def assemble_payload(
     # 低频/空默认
     payload["ecgRaw"] = {"dataPoints": []}
     payload["irnAlertsRaw"] = {"dataPoints": []}
-    payload["glucoseRaw"] = {"dataPoints": []}
 
     if include is not None:
         payload = {key: value for key, value in payload.items() if key in include}

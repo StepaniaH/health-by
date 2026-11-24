@@ -195,7 +195,7 @@ def test_source_change_replaces_snapshot_metrics_and_raw_without_touching_other_
     assert storage.get_trends(conn, DAY, 1) == [{"date": DAY, "steps": 1234.0}]
     archived = conn.execute("SELECT source, payload FROM raw_days WHERE date = ?", (DAY,)).fetchone()
     assert archived["source"] == new_source
-    assert json.loads(archived["payload"]) == {}
+    assert storage.decode_raw_payload(archived["payload"]) == {}
     assert storage.get_day(conn, other_date) == other_day
 
 
@@ -208,3 +208,112 @@ def test_same_source_resync_preserves_raw_when_payload_is_missing(conn):
 
     assert storage.export_all(conn)["raw_days"][DAY] == raw.payload
     assert storage.get_day(conn, DAY)["activity"]["steps"] is not None
+
+
+
+def test_raw_days_compress_merge_legacy_decode_and_complete_delete(conn, synthetic_cfg):
+    import os
+    import zlib
+    from health_by import db, secrets
+
+    provider = SyntheticProvider()
+    raw = provider.fetch_raw(DAY)
+    snap = provider.translate(raw)
+    storage.store_day(conn, snap, raw)
+
+    # raw_days.payload 落库应为 zlib 压缩 BLOB，但可透明解码并与 export_all 对齐
+    row = conn.execute("SELECT payload FROM raw_days WHERE date = ?", (DAY,)).fetchone()
+    assert isinstance(row["payload"], (bytes, bytearray))
+    assert storage.decode_raw_payload(row["payload"]) == raw.payload
+
+    # 旧未压缩 JSON TEXT 行仍可读出
+    legacy_day = shift_iso(DAY, -1)
+    legacy_snap = DaySnapshot(legacy_day, "synthetic", "2026-10-30T00:00:00Z")
+    storage.store_day(conn, legacy_snap, RawDay(legacy_day, "synthetic", legacy_snap.generated_at, {"stepsDaily": {"steps": 123}}))
+    conn.execute("UPDATE raw_days SET payload = ? WHERE date = ?", ('{"stepsDaily":{"steps":123}}', legacy_day))
+    conn.commit()
+    exported_text = "".join(storage.iter_export_json(conn))
+    exported = json.loads(exported_text)
+    assert exported == storage.export_all(conn)
+    assert exported["raw_days"][legacy_day] == {"stepsDaily": {"steps": 123}}
+
+    # 同源部分重同步应按顶层任务键合并，保留先前成功的其它任务键值
+    partial = DaySnapshot(DAY, "synthetic", "2026-10-30T01:00:00Z")
+    storage.store_day(conn, partial, RawDay(DAY, "synthetic", partial.generated_at, {"stepsDaily": {"steps": 9999}}))
+    merged = storage.export_all(conn)["raw_days"][DAY]
+    assert merged["stepsDaily"] == {"steps": 9999}
+    assert "sleepRaw" in merged
+
+    # save_oauth_state 写入时顺带清理过期 state
+    storage.save_oauth_state(conn, "expired-state", "v")
+    conn.execute("UPDATE oauth_states SET created_at = '2000-01-01T00:00:00+00:00' WHERE state = 'expired-state'")
+    conn.commit()
+    storage.save_oauth_state(conn, "fresh-state", "v2")
+    states = {r["state"] for r in conn.execute("SELECT state FROM oauth_states")}
+    assert states == {"fresh-state"}
+
+    # 设置与凭据应在清空后保留，其余 8 张数据/临时表全部清空
+    store = secrets.SecretStore(synthetic_cfg.secret_key_path)
+    storage.save_credentials_raw(conn, "gh", store.encrypt_json({"access_token": "tok"}))
+    conn.execute(
+        "INSERT OR REPLACE INTO raw_measure_dates(raw_date, measure_date) VALUES (?, ?)",
+        (DAY, DAY),
+    )
+    conn.commit()
+    storage.delete_all_data(conn)
+    for table in ("days", "daily_metrics", "raw_days", "raw_measure_dates", "sync_runs", "ai_analyses", "ai_egress", "oauth_states"):
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    assert store.decrypt_json(storage.load_credentials_raw(conn, "gh")) == {"access_token": "tok"}
+
+
+def test_recovered_resync_clears_stale_coverage_errors_and_empty_raw_indexed_once(conn, monkeypatch):
+    from health_by import coverage as cov_module
+    from health_by.models import ActivityDay, Coverage
+
+    broken = DaySnapshot(
+        DAY,
+        "google-health",
+        "2026-10-30T00:00:00Z",
+        activity=ActivityDay(steps=5000),
+        coverage=Coverage(
+            endpoint_count=2,
+            success_count=1,
+            errors=[{"key": "sleepRaw", "message": "timeout", "status": 504}],
+        ),
+    )
+    storage.store_day(conn, broken, RawDay(DAY, "google-health", broken.generated_at, {"stepsDaily": {}}))
+    assert len(storage.get_day(conn, DAY)["coverage"]["errors"]) == 1
+
+    recovered = DaySnapshot(
+        DAY,
+        "google-health",
+        "2026-10-30T01:00:00Z",
+        activity=ActivityDay(steps=5200),
+        coverage=Coverage(endpoint_count=2, success_count=2, errors=[]),
+    )
+    storage.store_day(conn, recovered, RawDay(DAY, "google-health", recovered.generated_at, {"stepsDaily": {}}))
+    saved = storage.get_day(conn, DAY)
+    assert saved["coverage"]["endpoint_count"] == 2
+    assert saved["coverage"]["success_count"] == 2
+    assert saved["coverage"]["errors"] == []
+
+    # 0 命中日期的 raw_days 写入后应记占位标记，不反复解压，也不污染 raw_coverage
+    empty_day = shift_iso(DAY, -5)
+    conn.execute(
+        "INSERT OR REPLACE INTO raw_days (date, source, fetched_at, payload) VALUES (?, ?, ?, ?)",
+        (empty_day, "google-health", "2026-10-25T00:00:00Z", '{"userInfo": {"name": "A"}}'),
+    )
+    conn.commit()
+    cov_module.index_raw_dates(conn)
+    assert cov_module.raw_coverage(conn)["raw_days"] == 0
+
+    decode_calls = []
+    real_decode = storage.decode_raw_payload
+
+    def spy_decode(blob):
+        decode_calls.append(blob)
+        return real_decode(blob)
+
+    monkeypatch.setattr(storage, "decode_raw_payload", spy_decode)
+    assert cov_module.index_raw_dates(conn) == 0
+    assert decode_calls == []

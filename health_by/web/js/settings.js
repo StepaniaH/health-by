@@ -1,6 +1,8 @@
+import { initTheme } from "./theme.js";
 import { t, initLanguage, formatTimestampISO } from "./i18n.js";
 // 设置页：数据源 / Google Health 连接 / 目标 / 同步 / 数据管理
 import { get, post, toast } from "./api.js";
+import { initSelects, ensureFreshDocument } from "./ui-controls.js";
 
 const $ = (id) => document.getElementById(id);
 let aiConfigRevision = 0;
@@ -22,6 +24,7 @@ function clearAIModels() {
   $("ai-model-picker").hidden = true;
   $("ai-model-list").replaceChildren();
   $("ai-model-list").hidden = true;
+  $("ai-model-list").dispatchEvent?.(new Event("ui:sync"));
   $("ai-models-note").textContent = t("web.settings.clearAIModels.0b2051ff8");
 }
 
@@ -50,6 +53,7 @@ async function loadAIModels() {
     }
     list.value = "";
     list.hidden = false;
+    list.dispatchEvent?.(new Event("ui:sync"));
     $("ai-model-picker").hidden = false;
   } catch (error) {
     if (revision === aiConfigRevision) $("ai-models-note").textContent = t("web.settings.loadAIModels.122ec64da", {p1: error.message});
@@ -114,6 +118,7 @@ async function refresh() {
   updateSleepHours();
 
   $("sync-interval").value = String(settings.sync_interval_minutes ?? 360);
+  $("sync-interval").dispatchEvent?.(new Event("ui:sync"));
   const ai = settings.ai;
   $("ai-enabled").checked = ai.enabled;
   $("ai-base-url").value = ai.base_url;
@@ -123,12 +128,12 @@ async function refresh() {
   aiHasKey = ai.has_api_key;
   clearAIModels();
   aiSavedRevision = ++aiConfigRevision;
-  aiTestNote(t("web.settings.refresh.20de0829b"));
+  aiTestNote("");
   updateAIButtons();
   $("ai-settings-note").textContent = (ai.enabled ? (ai.has_api_key ? t("web.settings.refresh.a990f2327", {}) : t("web.settings.refresh.bf90960d4", {})) : (ai.has_api_key ? t("web.settings.refresh.c2147e5dc", {}) : t("web.settings.refresh.151ddca74", {})));
   updateAIDisclosure();
 
-  $("about").textContent = `Health By v${settings.version || ""}`;
+  $("about").textContent = t("web.settings.about", { version: settings.version || "" });
 
   await loadRuns();
 }
@@ -151,12 +156,17 @@ async function loadRuns() {
     for (const run of runs) {
       const row = document.createElement("tr");
       const statusText = run.status === "ok" ? t("web.settings.loadRuns.053461ce8") : run.status === "partial" ? t("web.settings.loadRuns.553dc98d8") : t("web.settings.loadRuns.28384d7af");
-      // 窄屏没有表头（见 app.css 的 .runs-table 断点规则），所以状态和覆盖带上自己的标签，
-      // 否则「成功」「31 / 31」脱离语境看不出是什么。
-      for (const text of [formatTimestampISO(run.finished_at || run.started_at), run.date || "—",
-        t("sync.row.status", { date: run.date || "—", status: statusText }),
-        t("sync.row.coverage", { ok: run.succeeded ?? "—", total: run.total ?? "—" })]) {
-        const cell = document.createElement("td"); cell.textContent = text; row.appendChild(cell);
+      const cells = [
+        [formatTimestampISO(run.finished_at || run.started_at), ""],
+        [run.date || "—", ""],
+        [statusText, t("sync.column.status")],
+        [t("sync.cell.coverage", { ok: run.succeeded ?? "—", total: run.total ?? "—" }), t("sync.column.coverage")],
+      ];
+      for (const [text, label] of cells) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        if (label) cell.setAttribute("data-label", label);
+        row.appendChild(cell);
       }
       body.appendChild(row);
     }
@@ -203,8 +213,8 @@ async function testAIConnection() {
     const result = await post("/ai/test", {});
     if (revision !== aiConfigRevision) return;
     const elapsed = Number.isFinite(result.latency_ms) ? `${(result.latency_ms / 1000).toFixed(1)}s` : t("web.settings.testAIConnection.b953bdf9a");
-    const status = !result.ok && typeof result.status === "number" ? `（HTTP ${result.status}）` : "";
-    const warning = result.warning ? `。${result.warning}` : "";
+    const status = !result.ok && typeof result.status === "number" ? t("web.settings.testAIConnection.http_status", { status: result.status }) : "";
+    const warning = result.warning ? `${t("separator.period")}${result.warning}` : "";
     aiTestNote(`${result.detail}${status} · ${elapsed} · ${result.model}${warning}`, result.ok);
   } catch (error) {
     if (revision === aiConfigRevision) aiTestNote(error.message, false);
@@ -251,31 +261,45 @@ async function disconnect() {
   }
 }
 
+let syncPollTimer = null;
+
 function pollSync() {
-  const timer = setInterval(async () => {
+  if (syncPollTimer !== null) clearInterval(syncPollTimer);
+  const syncBtn = $("sync-now");
+  if (syncBtn) syncBtn.disabled = true;
+  syncPollTimer = setInterval(async () => {
     try {
       const status = await get("/sync/status");
       const progress = status.progress || {};
       const note = $("sync-note");
       if (progress.running) {
-        note.textContent = t("web.settings.pollSync.96fd6ed0e", {p1: progress.completed, p2: progress.total});
+        const done = progress.days_completed ?? progress.completed ?? 0;
+        const total = progress.days_total ?? progress.total ?? 0;
+        note.textContent = t("web.settings.pollSync.96fd6ed0e", {p1: done, p2: total});
         return;
       }
-      clearInterval(timer);
+      clearInterval(syncPollTimer);
+      syncPollTimer = null;
+      if (syncBtn) syncBtn.disabled = false;
       note.textContent = status.last_result && status.last_result.status === "ok" ? t("web.settings.pollSync.17a06ecc2") : t("web.settings.pollSync.668d1f64e");
       await loadRuns();
     } catch {
-      clearInterval(timer);
+      clearInterval(syncPollTimer);
+      syncPollTimer = null;
+      if (syncBtn) syncBtn.disabled = false;
     }
   }, 1000);
 }
 
 async function syncNow() {
+  const syncBtn = $("sync-now");
+  if (syncBtn) syncBtn.disabled = true;
   try {
     await post("/sync", { days: 2 });
     toast(t("web.settings.syncNow.e4fe33414"));
     pollSync();
   } catch (error) {
+    if (syncBtn) syncBtn.disabled = false;
     toast(error.message, true);
   }
 }
@@ -312,6 +336,23 @@ function handleOauthBanner() {
   window.history.replaceState({}, "", "/settings");
 }
 
+async function copyRedirectUri() {
+  const input = $("gh-redirect-uri");
+  if (!input || !input.value) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(input.value);
+    } else {
+      input.focus();
+      input.select();
+      document.execCommand?.("copy");
+    }
+    toast(t("web.settings.copy_uri.ok"));
+  } catch {
+    toast(t("web.settings.copy_uri.fail"), true);
+  }
+}
+
 function bind() {
   $("ai-enabled").addEventListener("change", markAIConfigDirty);
   $("ai-base-url").addEventListener("input", () => { clearAIModels(); markAIConfigDirty(); });
@@ -323,6 +364,7 @@ function bind() {
   $("ai-test").addEventListener("click", testAIConnection);
   $("ai-clear-key").addEventListener("click", () => saveAI(true));
   $("save-credentials").addEventListener("click", saveCredentials);
+  $("copy-redirect-uri")?.addEventListener("click", copyRedirectUri);
   $("connect-gh").addEventListener("click", () => { window.location.href = "/oauth/start"; });
   $("disconnect-gh").addEventListener("click", disconnect);
   $("save-goals").addEventListener("click", () => save({
@@ -335,6 +377,9 @@ function bind() {
 }
 
 async function init() {
+  if (!ensureFreshDocument(".settings-block")) return;
+  initTheme();
+  initSelects();
   bind();
   handleOauthBanner();
   try {

@@ -250,3 +250,54 @@ def test_total_active_minutes_is_derived_not_stored():
         total = metrics.total_active_minutes(light, moderate, vigorous)
         mvpa = None if (moderate is None and vigorous is None) else (moderate or 0) + (vigorous or 0)
         assert total is None or mvpa is None or total >= mvpa
+
+
+def test_migration_is_transactional_and_rolls_back_on_error(tmp_path, monkeypatch):
+    """单个迁移版本内发生错误时必须整段回滚：不留半截表，也不推进 schema_version。"""
+    import sqlite3
+    import pytest
+    from health_by import db as db_module
+
+    conn = connect(tmp_path / "tx.db")
+    try:
+        migrate(conn)
+        base_version = db_module.SCHEMA_VERSION
+        broken_version = base_version + 1
+        broken_sql = (
+            "CREATE TABLE temp_mig_probe (id INTEGER PRIMARY KEY);\n"
+            "THIS IS INVALID SQL;"
+        )
+        monkeypatch.setattr(db_module, "MIGRATIONS", [*db_module.MIGRATIONS, (broken_version, broken_sql)])
+        monkeypatch.setattr(db_module, "SCHEMA_VERSION", broken_version)
+        with pytest.raises(sqlite3.OperationalError):
+            migrate(conn)
+
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "temp_mig_probe" not in tables
+        version = int(conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()["value"])
+        assert version == base_version
+
+        fixed_sql = "CREATE TABLE IF NOT EXISTS temp_mig_probe (id INTEGER PRIMARY KEY);"
+        monkeypatch.setattr(db_module, "MIGRATIONS", [*db_module.MIGRATIONS[:-1], (broken_version, fixed_sql)])
+        migrate(conn)
+        tables_after = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "temp_mig_probe" in tables_after
+        version_after = int(conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()["value"])
+        assert version_after == broken_version
+    finally:
+        conn.close()
+
+
+def test_migrate_recovers_from_half_applied_legacy_v5_column(tmp_path):
+    """旧版非事务迁移在 v5 中途中断（已加 session_id、未加 user_agent、版本停在 4）时，新版能平滑恢复。"""
+    conn = _build_legacy_database(tmp_path / "half_v5.db", 4)
+    try:
+        conn.execute("ALTER TABLE ai_egress ADD COLUMN session_id TEXT")
+        conn.commit()
+        migrate(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(ai_egress)")}
+        assert {"session_id", "user_agent", "payload_schema_version"} <= cols
+        version = int(conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()["value"])
+        assert version == SCHEMA_VERSION
+    finally:
+        conn.close()

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from health_by.i18n import t
 
-from datetime import datetime, timezone
+from datetime import date as date_type, datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Callable
 
@@ -51,7 +51,7 @@ def compare_with_baseline(
     prior = [point for point in trends if str(point.get("date") or "") < selected_date]
     metric_key = key or "value"
     series = [
-        {"date": point.get("date"), metric_key: selector(point)}
+        {"date": point.get("date"), metric_key: metrics.in_bounds(metric_key, selector(point))}
         for point in prior
         if point.get("date")
     ]
@@ -95,10 +95,37 @@ def period_delta(values: list[float | int | None], recent: int = 7) -> float | N
     return round((mean(latest) - prior_mean) / prior_mean * 100, 1)
 
 
+def _period_delta_for_date(
+    trends: list[dict[str, Any]], selected: str, key: str, recent: int = 7
+) -> float | None:
+    by_date = {
+        str(point["date"]): metrics.in_bounds(key, point.get(key))
+        for point in trends
+        if point.get("date")
+    }
+    anchor = selected or (max(by_date) if by_date else "")
+    if not anchor:
+        return None
+    try:
+        end = date_type.fromisoformat(anchor)
+    except ValueError:
+        return period_delta([metrics.in_bounds(key, p.get(key)) for p in trends], recent=recent)
+    values = [
+        by_date.get((end - timedelta(days=back)).isoformat())
+        for back in range(2 * recent - 1, -1, -1)
+    ]
+    return period_delta(values, recent=recent)
+
+
 def _ratio(current: float | int | None, goal: float | int | None) -> float | None:
     if current is None or goal in (None, 0):
         return None
-    return round(float(current) / float(goal), 3)
+    raw = float(current) / float(goal)
+    rounded = round(raw, 3)
+    # 未真正达标时（如 7999/8000 = 0.999875）禁止进位为 1.000，避免下游误判达标。
+    if raw < 1.0 and rounded >= 1.0:
+        return 0.999
+    return rounded
 
 
 def _minutes_text(minutes: float) -> str:
@@ -134,7 +161,10 @@ def build_analysis(
     # 先选展示口径，再生成差额、标题和解读；原始日值单独保留以供依据引用。
     comparisons = {}
     for key, daily in comparison_values(day).items():
-        current = display_values.get(key, daily) if display_values is not None else daily
+        if display_values is not None and key in display_values:
+            current = display_values[key]
+        else:
+            current = metrics.in_bounds(key, daily)
         comparisons[key] = {
             **compare_with_baseline(trends, selected, current, lambda point, metric=key: point.get(metric), key=key),
             "current_daily": daily,
@@ -156,8 +186,8 @@ def build_analysis(
     }
 
     period_deltas = {
-        "steps_7d": period_delta([p.get("steps") for p in trends]),
-        "sleep_7d": period_delta([p.get("sleep_minutes") for p in trends]),
+        "steps_7d": _period_delta_for_date(trends, selected, "steps"),
+        "sleep_7d": _period_delta_for_date(trends, selected, "sleep_minutes"),
     }
 
     endpoint_count = int(coverage.get("endpoint_count") or 0)
@@ -272,13 +302,22 @@ def _headline(
             "title": t('server.analysis._headline.cd1478f75'),
             "body": t('server.analysis._headline.5b8da7ebd', p1=_current_label(display_modes, 'resting_hr'), p2=resting['sample_count'], p3=round(resting['difference'])),
         }
-    steps_ratio = steps_goal.get("ratio")
-    if isinstance(steps_ratio, float) and steps_ratio >= 1:
+    steps_value = steps_goal.get("value")
+    steps_target = steps_goal.get("goal")
+    if (
+        isinstance(steps_value, (int, float))
+        and not isinstance(steps_value, bool)
+        and isinstance(steps_target, (int, float))
+        and not isinstance(steps_target, bool)
+        and steps_target > 0
+        and float(steps_value) >= float(steps_target)
+    ):
+        pct = round(float(steps_value) / float(steps_target) * 100)
         return {
             "tone": "ok",
             "eyebrow": t('server.analysis._headline.521a53f75'),
             "title": t('server.analysis._headline.c10b73325'),
-            "body": t('server.analysis._headline.a79e2eee1', p1=round(steps_ratio * 100)),
+            "body": t('server.analysis._headline.a79e2eee1', p1=pct),
         }
     return {
         "tone": "ok",
@@ -304,7 +343,7 @@ def _partial_body(sync: dict[str, Any]) -> str:
     names: list[str] = []
     for item in errors:
         if isinstance(item, dict):
-            label = item.get("job") or item.get("endpoint") or item.get("name")
+            label = item.get("key") or item.get("job") or item.get("endpoint") or item.get("name")
             if label:
                 names.append(str(label))
         elif item:

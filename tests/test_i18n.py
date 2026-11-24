@@ -181,3 +181,22 @@ def test_dependency_free_scanner_covers_interpolation_and_escapes(source, expect
 def test_dependency_free_scanner_preserves_non_ui_text_and_numeric_expressions(source):
     from check_i18n_js import scan
     assert scan(source) == []
+
+
+def test_check_i18n_catches_unknown_js_translation_key(tmp_path):
+    from check_i18n import collect
+
+    pkg = tmp_path / "health_by"
+    (pkg / "locales").mkdir(parents=True)
+    (pkg / "web/js").mkdir(parents=True)
+    (pkg / "locales/zh.json").write_text(json.dumps({"known.key": "已知"}), encoding="utf-8")
+    (pkg / "locales/en.json").write_text(json.dumps({"known.key": "Known"}), encoding="utf-8")
+    (pkg / "locales/plurals.json").write_text("{}", encoding="utf-8")
+    (pkg / "web/js/sample.js").write_text(
+        'const ok = t("known.key");\nconst bad = t("missing.js.key");\nobj.t("ignored.method");\n',
+        encoding="utf-8",
+    )
+    problems = collect(tmp_path)
+    assert any("missing.js.key" in problem for problem in problems)
+    assert not any("ignored.method" in problem for problem in problems)
+    assert not any("known.key" in problem for problem in problems)

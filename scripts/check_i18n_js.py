@@ -14,7 +14,7 @@ REGEX_PRECEDERS = set("(,=:[!&|?{};+-*%~^")
 REGEX_KEYWORDS = {'return', 'throw', 'case', 'yield', 'typeof', 'void', 'delete'}
 
 
-def scan(source: str) -> list[tuple[int, str]]:
+def _analyze(source: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
     problems = []
     newlines = [index for index, char in enumerate(source) if char == '\n']
     index, length = 0, len(source)
@@ -134,8 +134,29 @@ def scan(source: str) -> list[tuple[int, str]]:
             tokens.append(previous)
         return tokens
 
-    code()
-    return sorted(set(problems))
+    tokens = code()
+    keys: list[tuple[int, str]] = []
+    for i, token in enumerate(tokens):
+        if token[0] != 'identifier' or token[1] != 't':
+            continue
+        if i > 0 and tokens[i - 1][0] == 'operator' and tokens[i - 1][1] in ('.', '?.'):
+            continue
+        if (
+            i + 2 < len(tokens)
+            and tokens[i + 1][0] == 'operator'
+            and tokens[i + 1][1] == '('
+            and tokens[i + 2][0] == 'string'
+        ):
+            keys.append((bisect_right(newlines, token[2]) + 1, tokens[i + 2][1]))
+    return sorted(set(problems)), keys
+
+
+def scan(source: str) -> list[tuple[int, str]]:
+    return _analyze(source)[0]
+
+
+def extract_keys(source: str) -> list[tuple[int, str]]:
+    return _analyze(source)[1]
 
 
 def main(argv):

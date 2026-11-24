@@ -21,8 +21,13 @@ function appendHighlightedText(host, text) {
 
 function renderAdvice(text) {
   // 只去掉分句开头的列表序号；小数、句中数量、标点和条件句保持原样。
-  const sentences = (text.match(/[^。]+(?:。+|$)|。+/g) || [])
-    .map(raw => raw.replace(/^\s*\d+\s*[.、)．](?!\d)\s*/, ""));
+  const rawChunks = text.match(/[^。]+(?:。+|$)|。+/g) || [];
+  const sentences = rawChunks
+    .flatMap((chunk) =>
+      chunk.split(/(?<=[A-Za-z0-9_]{2}\.)\s+(?=(?:\d+\s*[.、)．](?!\d)\s*)?[A-Z\u4e00-\u9fff])/),
+    )
+    .map((raw) => raw.replace(/^\s*\d+\s*[.、)．](?!\d)\s*/, ""))
+    .filter((s) => s.length > 0);
   const list = document.createElement("ol");
   list.className = "ai-advice";
   for (const sentence of sentences.slice(0, 3)) {
@@ -68,15 +73,27 @@ function renderEvidence(validation) {
   return details;
 }
 
+function syncWindowUI() {
+  const choice = $("ai-window-preset")?.value || "1";
+  for (const btn of (document.querySelectorAll?.("[data-ai-preset]") || [])) {
+    const active = btn.dataset?.aiPreset === choice;
+    btn.classList?.toggle("is-active", active);
+    btn.setAttribute?.("aria-pressed", active ? "true" : "false");
+  }
+  const customRow = $("ai-custom-range");
+  if (customRow) customRow.hidden = choice !== "custom" && !ai.windowDirty;
+}
+
 export function renderAI() {
+  syncWindowUI();
   const button = $("ai-generate");
   button.disabled = ai.loading || ai.busy || ai.windowDirty || !ai.validWindow || !ai.settings?.enabled;
   $("ai-window-note").textContent = ai.windowDirty ? t("web.ai.renderAI.2c774e75b")
-    : ai.start && ai.end ? t("web.ai.renderAI.ee98d4582", {p1: ai.start, p2: ai.end, p3: ai.settings?.max_window_days || 366}) : t("web.ai.renderAI.a1c44dc27");
+    : ai.start && ai.end ? (ai.start === ai.end ? ai.start : t("web.ai.renderAI.ee98d4582", {p1: ai.start, p2: ai.end})) : t("web.ai.renderAI.a1c44dc27");
   button.textContent = ai.busy ? t("web.ai.renderAI.43d2661b3") : (ai.analysis ? t("web.ai.renderAI.3221a042e") : t("web.ai.renderAI.b932e2eca"));
   $("ai-error").textContent = ai.error;
   $("ai-error").hidden = !ai.error;
-  $("ai-status").textContent = ai.windowDirty ? t("web.ai.renderAI.4cf21e686") : ai.loading ? t("web.ai.renderAI.93caf76e1")
+  $("ai-status").textContent = ai.windowDirty ? "" : ai.loading ? t("web.ai.renderAI.93caf76e1")
     : ai.busy ? t("web.ai.renderAI.723f49e18")
     : !ai.settings?.enabled ? t("web.ai.renderAI.fbce4977e")
     : ai.analysis ? "" : t("web.ai.renderAI.a3c8ef7f3");
@@ -87,7 +104,13 @@ export function renderAI() {
   validationHost.replaceChildren();
   const validation = result?.validation;
   const truncated = result?.truncated || validation?.truncated || result?.finish_reason === "length";
-  const malformed = validation?.issues?.some((issue) => issue.section === "output" || issue.reason.includes(t("web.ai.renderAI.2e1bdc294")));
+  const clinicalSafety = validation?.issues?.some((issue) => issue.code === "clinical_safety");
+  const malformed = validation?.issues?.some(
+    (issue) =>
+      ["invalid_json_shape", "invalid_field_type", "empty_section", "truncated", "clinical_safety"].includes(issue.code) ||
+      issue.section === "output" ||
+      (issue.reason || "").includes(t("web.ai.renderAI.2e1bdc294")),
+  );
   validationHost.hidden = !validation || validation.state === "ok";
   if (validation && validation.state !== "ok") {
     const title = document.createElement("p");
@@ -101,7 +124,7 @@ export function renderAI() {
     validationHost.appendChild(title);
     for (const issue of [...(validation.issues || []), ...(validation.warnings || [])]) {
       const note = document.createElement("p");
-      note.textContent = (issue.text && !malformed ? `${issue.section}：${issue.reason}${` — ${issue.text}`}` : `${issue.section}：${issue.reason}${""}`);
+      note.textContent = (issue.text && !malformed ? `${issue.section}${t("separator.colon")}${issue.reason}${` — ${issue.text}`}` : `${issue.section}${t("separator.colon")}${issue.reason}${""}`);
       validationHost.appendChild(note);
     }
     if (validation.missed?.length) {
@@ -115,7 +138,9 @@ export function renderAI() {
       const explanation = document.createElement("p");
       explanation.textContent = truncated
         ? t("web.ai.renderAI.5911bd2fc")
-        : t("web.ai.renderAI.1964a4a20");
+        : clinicalSafety
+          ? t("web.ai.renderAI.clinical_safety_suppressed")
+          : t("web.ai.renderAI.1964a4a20");
       output.appendChild(explanation);
     }
     for (const [key, label] of (malformed ? [] : [["phenomenon", t("web.ai.renderAI.3aa469bab")], ["causes", t("web.ai.renderAI.4141e844b")], ["advice", t("web.ai.renderAI.abee49747")]])) {
@@ -161,7 +186,9 @@ export function renderAI() {
   let host = t("web.ai.renderAI.97caec274");
   try { if (ai.settings?.base_url) host = new URL(ai.settings.base_url).host; } catch { /* 保留通用名称 */ }
   const scope = ai.start === ai.end ? t("web.ai.renderAI.4b4e02bde") : t("web.ai.renderAI.cfd52f66e");
-  $("ai-boundary").textContent = t("web.ai.renderAI.453a84795", {host: host, scope: scope});
+  const boundaryEl = $("ai-boundary");
+  boundaryEl.textContent = t("web.ai.renderAI.453a84795", {host: host, scope: scope});
+  boundaryEl.hidden = !ai.settings?.enabled;
 }
 
 function offsetDate(date, days) {
@@ -217,6 +244,10 @@ export async function applyAIWindow() {
 export async function loadAI(date) {
   ai.date = date;
   if (!$("ai-window-start").value || !$("ai-window-end").value) $("ai-window-preset").value = "1";
+  if ($("ai-window-preset").value === "custom" && ai.windowDirty) {
+    renderAI();
+    return;
+  }
   presetDates();
   return applyAIWindow();
 }
@@ -249,4 +280,20 @@ export function bindAI() {
     presetDates();
     return applyAIWindow();
   });
+  for (const btn of (document.querySelectorAll?.("[data-ai-preset]") || [])) {
+    btn.addEventListener("click", () => {
+      const value = btn.dataset?.aiPreset || "1";
+      const preset = $("ai-window-preset");
+      if (value === "custom") {
+        if (preset.value === "custom") return;
+        preset.value = "custom";
+        markAIWindowDirty();
+        return;
+      }
+      if (preset.value === value && !ai.windowDirty && (ai.validWindow || ai.loading) && !ai.error) return;
+      preset.value = value;
+      presetDates();
+      return applyAIWindow();
+    });
+  }
 }

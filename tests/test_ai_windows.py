@@ -223,3 +223,22 @@ def test_v6_upgrade_labels_both_protocols_without_rewriting_historical_records(t
         assert [row.pop("payload_schema_version") for row in rows] == ["daily-v1", "window-v1"]
         assert [row.pop("payload_schema_version") for row in egress] == ["daily-v1", "window-v1"]
         assert rows == old and egress == old_egress
+
+
+
+def test_window_trend_uses_median_split_robust_to_outliers():
+    # 前半段 3 天平稳约 50，后半段第 4 天单点尖刺 200 但第 5/6 天仍为 50 -> 中位数均为 50，趋势应判 flat
+    spike_days = [
+        {"date": f"2026-10-0{i + 1}", "heart": {"resting_hr": val}}
+        for i, val in enumerate([50, 50, 50, 200, 50, 50])
+    ]
+    res = build_window_payload(spike_days, {}, "2026-10-01", "2026-10-06", today="2026-10-06")
+    assert res["metrics"]["heart"]["resting_hr"]["trend"]["direction"] == "flat"
+
+    # 前半段 5000，后半段升到 6500 -> 中位数明显上升，趋势判 up
+    up_days = [
+        {"date": f"2026-10-0{i + 1}", "activity": {"steps": val}}
+        for i, val in enumerate([5000, 5050, 5000, 6400, 6500, 6600])
+    ]
+    up_res = build_window_payload(up_days, {}, "2026-10-01", "2026-10-06", today="2026-10-06")
+    assert up_res["metrics"]["activity"]["steps"]["trend"]["direction"] == "up"

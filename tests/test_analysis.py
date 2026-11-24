@@ -384,9 +384,27 @@ def test_achievements_summary_replaces_the_front_end_slice():
     assert summary["total"] == len(rows)
     assert summary["achieved"] == sum(1 for row in rows if (row.get("steps_ratio") or 0) >= 1)
 
-    # 序列比窗口短时，total 是实际天数（与 slice 后取 .length 一致）
-    short = build_insights(days[:5], {"steps": 8000}, end_date=DAY, window_days=90)
-    assert short["achievements_summary"]["steps_ratio"]["total"] == 5
+    # 序列比窗口短且落在近 28 个日历日内时，total 是窗口内实际天数；早于窗口的老记录不计入
+    short = build_insights(days[-5:], {"steps": 8000}, end_date=DAY, window_days=90)
+    short_summary = short["achievements_summary"]["steps_ratio"]
+    assert short_summary["total"] == 5
+    assert short_summary["observed"] == 5
+    assert short_summary["missing_days"] == ACHIEVEMENTS_WINDOW_DAYS - 5
+
+    old_only = build_insights(days[:5], {"steps": 8000}, end_date=DAY, window_days=90)
+    assert old_only["achievements_summary"]["steps_ratio"]["total"] == 0
+    assert old_only["achievements_summary"]["steps_ratio"]["observed"] == 0
+    assert old_only["achievements_summary"]["steps_ratio"]["missing_days"] == ACHIEVEMENTS_WINDOW_DAYS
+
+
+def test_near_goal_steps_never_round_up_to_goal_met():
+    """7999/8000 = 0.999875 不得因三位舍入变成 1.000 而误报达标。"""
+    from health_by.analysis import build_analysis
+
+    day = make_day(DAY, activity={"steps": 7999}, sleep={"total_minutes": 480})
+    result = build_analysis(day, [], {"steps": 8000, "sleep_minutes": 480})
+    assert result["goal_progress"]["steps"]["ratio"] == 0.999
+    assert result["headline"]["tone"] != "ok" or "达标" not in result["headline"]["title"]
 
 
 def test_window_echoes_cannot_disagree():

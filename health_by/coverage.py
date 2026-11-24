@@ -1,11 +1,13 @@
 """比较原始窗口中记录的日期与已归一化日期；只读，不自动回填。"""
 
-import json
 from datetime import date
 
 from .providers.google_health.translate import _civil_date, _date_from_civil, _points
+from .storage import decode_raw_payload
 
 MAX_MISSING_DATES = 30
+# 空字符串哨兵：标记 raw_days 该行已完成索引但无匹配测量日期，避免每次覆盖度检查反复解压。
+_EMPTY_INDEXED_MARKER = ""
 
 
 def _valid_date(value: str | None) -> str | None:
@@ -43,6 +45,24 @@ def measure_dates(payload) -> set[str]:
     return found
 
 
+def record_raw_dates(conn, raw_date: str, payload) -> set[str]:
+    """将单条 raw_days 的测量日期写入索引表；0 匹配时写入空哨兵避免重复解压。"""
+    forget_raw_dates(conn, raw_date)
+    found = measure_dates(payload)
+    if found:
+        for measured in found:
+            conn.execute(
+                "INSERT OR IGNORE INTO raw_measure_dates (raw_date, measure_date) VALUES (?, ?)",
+                (raw_date, measured),
+            )
+    else:
+        conn.execute(
+            "INSERT OR IGNORE INTO raw_measure_dates (raw_date, measure_date) VALUES (?, ?)",
+            (raw_date, _EMPTY_INDEXED_MARKER),
+        )
+    return found
+
+
 def index_raw_dates(conn, only_unindexed: bool = True) -> int:
     """把载荷里的测量日期写进 raw_measure_dates；返回处理的行数。
 
@@ -56,12 +76,7 @@ def index_raw_dates(conn, only_unindexed: bool = True) -> int:
     if not rows:
         return 0
     for row in rows:
-        conn.execute("DELETE FROM raw_measure_dates WHERE raw_date = ?", (row[0],))
-        for measured in measure_dates(json.loads(row[1])):
-            conn.execute(
-                "INSERT OR IGNORE INTO raw_measure_dates (raw_date, measure_date) VALUES (?, ?)",
-                (row[0], measured),
-            )
+        record_raw_dates(conn, row[0], decode_raw_payload(row[1]))
     conn.commit()
     return len(rows)
 
@@ -78,7 +93,7 @@ def raw_coverage(conn) -> dict:
         row[0]
         for row in conn.execute(
             "SELECT DISTINCT measure_date FROM raw_measure_dates "
-            "WHERE raw_date IN (SELECT date FROM raw_days)"
+            "WHERE measure_date != '' AND raw_date IN (SELECT date FROM raw_days)"
         )
     }
     normalized = {row[0] for row in conn.execute("SELECT date FROM days")}

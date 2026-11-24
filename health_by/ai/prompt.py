@@ -4,9 +4,10 @@ import json
 import re
 
 
-# 单日输入说明独立升级，窗口提示词继续使用已验收的版本。
-PROMPT_VERSION = "v4-input-2"
-WINDOW_PROMPT_VERSION = "v4-window-1"
+# 单日与窗口提示词各自按输入契约版本化。
+PROMPT_VERSION = "v4-input-3"
+WINDOW_PROMPT_VERSION = "v4-window-2"
+TRUNCATION_REPAIR_NOTE = "上一版 JSON 在输出尚未结束时被截断。请保留最核心的 2–3 条事实，大幅精简每段文字（总计不超过 220 字），确保输出完整且合法的 JSON。"
 REPAIR_PROMPT = """你上一版解读没有通过校验。
 问题：
 {issues}
@@ -83,14 +84,23 @@ statistics.correlations         已通过校正：x / y / r / n
 
 
 DAILY_INPUT_NOTE = """day 的 *_today 是所选日的当日值，不一定是服务器今天。
-六项状态指标同时提供 *_7d，表示以所选日结束的近 7 天平均；缺测不补零。行为类只发 *_today，不发滚动值。
+六项状态指标同时提供 *_7d，表示以所选日结束的近 7 天平均（共 rolling_window_days 天）；缺测不补零。行为类只发 *_today，不发滚动值。
 当日和近 7 天平均是不同时间口径，不能把其中一个说成另一个。引用数字时明确写“当日”“7 日均值”或“近 7 天平均”；
 不用“平均而言”“一般来说”或不带天数的“近期”代替窗口。两值相同也不代表同一种测量。
-statistics.comparisons 的 current_today/current_7d 分别对应当日/7 日均值；
-difference_today/percent_change_today 与 difference_7d/percent_change_7d 均已按同一 baseline 算好，不要自行相减。
-sample_count 小于 min_samples 时不说偏离基线。行为类没有 7d 字段。
-statistics.goal_progress 与 recovery 中带 today 的差额都是当日口径。
-statistics.correlations 是固定的允许配对；只有通过校正的统计值才非 null，其余 null 表示没有可引用的外发结论，不能据此判定没计算、样本不足或零相关。
+```
+statistics.comparisons.<指标>   current_today / current_7d / baseline / difference_today / difference_7d /
+                                percent_change_today / percent_change_7d / sample_count / min_samples / window_days
+                                → 当日和 7 日均值均已按同一 baseline 算好，不要自行相减；sample_count 小于 min_samples 时不说偏离基线
+statistics.period_deltas        steps_7d / sleep_7d（近 7 天较前 7 天变化，仅此两项有滚动差额）
+statistics.goal_progress        steps / sleep_minutes 下的 ratio_today / remaining_today（当日口径）
+statistics.bands_outside        points / outside / percent（各指标独立，不混用）
+statistics.recovery             hrv_delta_pct_today / rhr_delta_today / need_minutes / sleep_debt（minutes / avg_deficit / nights / window）
+statistics.rhythm               sri / sri_pairs / midpoint_sd_min / social_jetlag_min
+statistics.load                 steps_avg_7 / steps_avg_28 / active_avg_7 / active_avg_28 / who_weekly_minutes / who_pct
+statistics.coverage             days_with_archive / partial_days / per_metric_days / excluded_out_of_range
+statistics.correlations         x / y / r / n / offset_days / ci_low / ci_high（仅通过校正后非 null；其余 null 不代表没计算、样本不足或零相关）
+```
+若 alerts.irregular_rhythm_alerts 大于 0，可中性建议及时就医检查；其余情况不写免责或就医套话。
 """
 
 DAILY_SYSTEM_PROMPT = SYSTEM_PROMPT.split("## 输入结构")[0].replace(
@@ -104,9 +114,29 @@ DAILY_SYSTEM_PROMPT = SYSTEM_PROMPT.split("## 输入结构")[0].replace(
 WINDOW_INPUT_NOTE = """本次是多日窗口输入，不是某一天的记录；请谈所选区间，不把窗口均值说成今天的实测值。
 window.days 包含首尾，days_with_archive 为存档天数，days_with_data 为有任一有效白名单测量的天数；date_range 为相对日期。
 window.missing_days/max_missing_streak 按完整日历统计。metrics 按单日指标分组，每项含 mean/median/min/max、coverage_days/missing_days/max_missing_streak/excluded_days。
-min_day/max_day 各一个相对日期，仅是极值日，不是健康好坏。trend 只有 direction/first/last，比较最早和最晚有效观测，不等于首尾日历日；不足两条不判断方向，不称显著或稳定趋势。
+min_day/max_day 各一个相对日期，仅是极值日，不是健康好坏。trend 只有 direction/first/last，有效样本不少于 3 天时比较前半段与后半段中位数，少于 3 天时比较首末有效观测，不等于首尾日历日；不足两条不判断方向，不称显著或稳定趋势。
 goals 的 achievement_rate 以有效测量天数为分母；缺测不算失败，无有效样本时为 null。best_day/worst_day 仅按既定目标完成比例比较，比例封顶，不是综合健康评分。
-本输入没有 day 或 statistics 对象，不要去那里找数。所有统计均已算好，不自行补算百分比或编造因果。"""
+所有统计均已算好，不自行补算百分比或编造因果；没有单日对比或相关性字段，不要去那里找数。"""
+
+_WINDOW_HARD_RULES = SYSTEM_PROMPT.split("## 输入结构")[0].replace(
+    "- `bands_outside` 每个指标各自独立，不要把一个指标的百分比和另一个混着说。\n", ""
+).replace(
+    "- 不做医学诊断，不写免责套话（「仅供参考」一律不写）。",
+    "- 不做医学诊断；若 `alerts.irregular_rhythm_alerts` 有异常提醒，可中性建议及时就医检查，其余情况不写免责或就医套话（「仅供参考」一律不写）。",
+)
+
+WINDOW_SYSTEM_PROMPT = _WINDOW_HARD_RULES + """## 输入结构
+
+`window` 是时间区间与完整性汇总，`metrics` 是各领域的窗口聚合统计，`goals` 是区间目标达成情况。
+
+```
+window          days / days_with_archive / days_with_data / date_range / missing_days / max_missing_streak
+metrics         按领域分组的单项指标，每项含 mean / median / min / max / min_day / max_day /
+                coverage_days / missing_days / max_missing_streak / excluded_days / trend (direction / first / last)
+goals           target / achievement_rate / best_day / worst_day / achieved_days
+```
+
+## 输出""" + SYSTEM_PROMPT.split("## 输出", 1)[1]
 
 
 def version_for_window(start: str, end: str) -> str:
@@ -129,7 +159,7 @@ def build_messages(payload: dict) -> list[dict]:
     if weekday:
         label += f"（{weekday}）"
     return [
-        {"role": "system", "content": SYSTEM_PROMPT if window.get("days", 1) > 1 else DAILY_SYSTEM_PROMPT},
+        {"role": "system", "content": WINDOW_SYSTEM_PROMPT if window.get("days", 1) > 1 else DAILY_SYSTEM_PROMPT},
         {"role": "user", "content": f"以下是{label}的统计结果（JSON）：{note}\n"
          + json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
          + "\n请按系统提示要求解读。"},

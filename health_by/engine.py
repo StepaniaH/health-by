@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from health_by.i18n import t
 
+import logging
 import sqlite3
 import threading
 import time
+from contextlib import closing
 
 import httpx
 
@@ -23,6 +25,7 @@ AUTOSYNC_BACKFILL_LIMIT_DAYS = 30  # 自动同步一次最多回补多少天
 MAX_REPORTED_FAILED_JOBS = 5  # 批次结果里最多列出几个失败任务名
 DRIFT_BASELINE_MIN_FIELDS = 3  # 少于这个字段数不做漂移判断（样本太薄，没意义）
 DRIFT_LOST_FIELDS = 2  # 同一日期比上次少这么多字段，且没有请求错误 → 判为疑似解析失败
+LOG = logging.getLogger(__name__)
 
 
 class Engine:
@@ -31,10 +34,13 @@ class Engine:
         self.conn = conn
         self.secrets = SecretStore(cfg.secret_key_path)
         self._lock = threading.RLock()
+        self._clear_lock = threading.RLock()
+        self._clear_generation = 0
         self._queue_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
-        self._pending: list[str] = []
+        self._pending: list[tuple[str, tuple[int, int]]] = []
         self._active: set[str] = set()
+        self._inflight: dict[str, tuple[int, int]] = {}  # 覆盖排队中 + 协调器已取走待分派 + 正在处理的日期及其入队代际
         self._outstanding = 0  # 已接受但尚未处理完的日期数（拿 _queue_lock 保护）
         # 按日期串行化写入：后台 worker 直接调 _sync_day 时不经过 _lock，
         # 同一天可能被前后台两个线程同时处理，各自用独立连接 DELETE+INSERT。
@@ -45,6 +51,7 @@ class Engine:
         self._date_locks_guard = threading.Lock()
         self._coordinator: threading.Thread | None = None
         self._shutdown = threading.Event()
+        self._progress_lock = threading.Lock()
         self.workers = max(1, int(env_value("SYNC_WORKERS", "2")))
         self._http: httpx.Client | None = None
         self.progress: dict = {
@@ -80,10 +87,37 @@ class Engine:
         if coordinator is not None and coordinator.is_alive():
             coordinator.join(timeout=timeout)
         with self._queue_lock:
+            for date, gen in self._pending:
+                if self._inflight.get(date) == gen:
+                    del self._inflight[date]
             self._pending.clear()
+            self._outstanding = len(self._inflight)
+
+    def _current_clear_gen(self, conn: sqlite3.Connection | None = None) -> tuple[int, int]:
+        """组合进程内代际与库内持久化代际，同时防同进程并发与跨进程同步回写。"""
+        target = conn or self.conn
+        return (self._clear_generation, storage.get_clear_generation(target))
+
+    def clear_all(self, conn: sqlite3.Connection | None = None) -> None:
+        """与在途后台同步协调清空数据库：递增代际、清理待执行队列与内存结果，阻止旧任务回写。"""
+        with self._clear_lock:
+            self._clear_generation += 1
+            with self._queue_lock:
+                for date, gen in self._pending:
+                    if self._inflight.get(date) == gen:
+                        del self._inflight[date]
+                self._pending.clear()
+                self._outstanding = len(self._inflight)
+            with self._progress_lock:
+                self.last_result = None
+            storage.delete_all_data(conn or self.conn)
 
     def provider_name(self, conn: sqlite3.Connection | None = None) -> str:
-        return str(storage.get_setting(conn or self.conn, "provider", "google-health"))
+        name = str(storage.get_setting(conn or self.conn, "provider", "google-health"))
+        if name == "demo":
+            LOG.warning("Legacy provider 'demo' was removed; falling back to 'google-health'.")
+            return "google-health"
+        return name
 
     # ---------- 凭据 ----------
 
@@ -93,7 +127,8 @@ class Engine:
             return None
         try:
             return self.secrets.decrypt_json(raw)
-        except SecretError:
+        except SecretError as exc:
+            LOG.error("Failed to decrypt credentials for '%s': %s", name, exc)
             return None
 
     def save_credentials_for(self, name: str, credentials: dict, conn: sqlite3.Connection | None = None) -> None:
@@ -197,17 +232,80 @@ class Engine:
             if entry[1] <= 0:
                 del self._date_locks[date]
 
-    def _sync_day(self, date: str, conn=None) -> tuple[DaySnapshot, bool, dict]:
+    def _sync_day(
+        self,
+        date: str,
+        conn=None,
+        *,
+        expected_clear_gen: tuple[int, int] | None = None,
+    ) -> tuple[DaySnapshot, bool, dict]:
         # 同一天同一时刻只允许一个线程在跑（前台手动同步 vs 后台 worker）。
         lock = self._acquire_date_lock(date)
         try:
             with lock:
-                return self._sync_day_locked(date, conn)
+                return self._sync_day_locked(date, conn, expected_clear_gen=expected_clear_gen)
         finally:
             self._release_date_lock(date)
 
-    def _sync_day_locked(self, date: str, conn=None) -> tuple[DaySnapshot, bool, dict]:
+    @staticmethod
+    def _snapshot_has_data(snapshot: DaySnapshot, metrics: dict[str, float]) -> bool:
+        """区分「值得留档落库」与「仅靠主标量判定」：含日内序列、心率极值、小睡或当日告警/ECG 的日子不可丢弃。"""
+        if metrics or snapshot.sleep or snapshot.workouts:
+            return True
+        if snapshot.activity.steps_intraday or snapshot.heart.hr_intraday:
+            return True
+        if any(
+            value is not None
+            for value in (
+                snapshot.heart.hr_min,
+                snapshot.heart.hr_max,
+                snapshot.heart.hr_avg,
+                snapshot.heart.hrv_deep_rmssd_ms,
+                snapshot.heart.hrv_entropy,
+                snapshot.heart.non_rem_hr,
+                snapshot.heart.spo2_min,
+                snapshot.heart.spo2_max,
+                snapshot.heart.skin_temp_nightly_c,
+                snapshot.heart.skin_temp_baseline_c,
+                snapshot.heart.skin_temp_stddev_30d_c,
+            )
+        ):
+            return True
+        if (snapshot.alerts.irregular_rhythm_alerts or 0) > 0:
+            return True
+        # ECG 查的是 90 天历史窗：仅当存在测量日期落在 snapshot.date 当天的 ECG 时才视作当日有数据，
+        # 避免过去 90 天内的一条旧 ECG 让后续空白日期被误建档。
+        if any(
+            isinstance(reading, dict) and str(reading.get("start_time") or "")[:10] == snapshot.date
+            for reading in (snapshot.alerts.ecg_readings or [])
+        ):
+            return True
+        return bool(snapshot.naps_count or snapshot.naps_minutes)
+
+    def _sync_day_locked(
+        self,
+        date: str,
+        conn=None,
+        *,
+        expected_clear_gen: tuple[int, int] | None = None,
+    ) -> tuple[DaySnapshot, bool, dict]:
         target = conn or self.conn
+        with self._clear_lock:
+            current_gen = self._current_clear_gen(target)
+            clear_gen = current_gen if expected_clear_gen is None else expected_clear_gen
+            if current_gen != clear_gen:
+                return (
+                    DaySnapshot(date=date, source=self.provider_name(target), generated_at=utc_now_iso()),
+                    False,
+                    {
+                        "status": "cancelled",
+                        "partial": False,
+                        "failed_count": 0,
+                        "failed_jobs": [],
+                        "stats": {"total": 0, "succeeded": 0},
+                        "warnings": [],
+                    },
+                )
         name = self.provider_name(target)
         provider = get_provider(name)
         started_at = utc_now_iso()
@@ -223,51 +321,76 @@ class Engine:
         )
         snapshot = provider.translate(raw)
         metrics = metric_values(snapshot)
-        # 基线取「该日期上一次同步实际解析出多少字段」，而不是 daily_metrics 的
-        # 累积行数（那个只增不减，会让同一次漂移被反复报告且文案失真）。
-        # 没有历史字段数（v3 之前写入的老库）时**直接跳过检测**：那时唯一的
-        # 替代基线就是那个累积行数，宁可这一轮不判，也不要拿错数据报假警告。
-        # 下一次同步就会记下 fields，检测随即恢复。
-        baseline = storage.last_field_count(target, date)
-        # 无任何可展示数据的日期不落库，避免回填时污染日期选择与趋势
-        stored = bool(metrics or snapshot.sleep or snapshot.workouts)
-        if stored:
-            storage.store_day(target, snapshot, raw)
-        warnings = self._drift_warnings(date, len(metrics), baseline, raw)
-        # 「有值但解析失败」与「上游没数据」是两件事：前者记 warning，后者不记。
-        if raw.parse_issues:
-            warnings = t('server.engine._sync_day_locked.8d13781d4', p1=warnings, p2=[
-                {
-                    "kind": "parse_issue",
-                    "message": (
-                        t('server.engine._sync_day_locked.1eff58b7e', date=date, p2=len(raw.parse_issues))
-                    ),
-                    "date": date,
-                    "sample": raw.parse_issues[:MAX_REPORTED_FAILED_JOBS],
-                }
-            ])
         total = int(raw.stats.get("total") or 0)
         succeeded_value = raw.stats.get("succeeded")
         succeeded = total if succeeded_value is None else int(succeeded_value)
-        # 只有请求成功且没有数据时才是 empty；失败不能推进自动补抓游标。
-        has_failures = bool(raw.errors) or succeeded < total
-        if has_failures:
-            status = "partial" if stored and succeeded > 0 else "error"
-        else:
-            status = "ok" if stored else "empty"
-        storage.record_sync_run(
-            target,
-            provider=name,
-            started_at=started_at,
-            finished_at=utc_now_iso(),
-            date=date,
-            total=total,
-            succeeded=succeeded,
-            status=status,
-            errors=raw.errors or None,
-            warnings=warnings or None,
-            fields=len(metrics),
-        )
+        stored = self._snapshot_has_data(snapshot, metrics)
+        with self._clear_lock:
+            managed_tx = not target.in_transaction
+            if managed_tx:
+                target.execute("BEGIN IMMEDIATE")
+            try:
+                # 拉取期间若发生清空数据（同进程或跨进程），放弃本次回写，避免已删除记录重新出现。
+                if self._current_clear_gen(target) != clear_gen:
+                    if managed_tx and target.in_transaction:
+                        target.rollback()
+                    return (
+                        snapshot,
+                        False,
+                        {
+                            "status": "cancelled",
+                            "partial": False,
+                            "failed_count": 0,
+                            "failed_jobs": [],
+                            "stats": {"total": total, "succeeded": succeeded},
+                            "warnings": [],
+                        },
+                    )
+                # 基线取「该日期上一次同步实际解析出多少字段」，而不是 daily_metrics 的
+                # 累积行数（那个只增不减，会让同一次漂移被反复报告且文案失真）。
+                baseline = storage.last_field_count(target, date)
+                if stored:
+                    storage.store_day(target, snapshot, raw, commit=False)
+                warnings = self._drift_warnings(date, len(metrics), baseline, raw)
+                # 「有值但解析失败」与「上游没数据」是两件事：前者记 warning，后者不记。
+                if raw.parse_issues:
+                    warnings = [
+                        *warnings,
+                        {
+                            "kind": "parse_issue",
+                            "message": (
+                                t('server.engine._sync_day_locked.1eff58b7e', date=date, p2=len(raw.parse_issues))
+                            ),
+                            "date": date,
+                            "sample": raw.parse_issues[:MAX_REPORTED_FAILED_JOBS],
+                        },
+                    ]
+                # 只有请求成功且没有数据时才是 empty；失败不能推进自动补抓游标。
+                has_failures = bool(raw.errors) or succeeded < total
+                if has_failures:
+                    status = "partial" if stored and succeeded > 0 else "error"
+                else:
+                    status = "ok" if stored else "empty"
+                storage.record_sync_run(
+                    target,
+                    provider=name,
+                    started_at=started_at,
+                    finished_at=utc_now_iso(),
+                    date=date,
+                    total=total,
+                    succeeded=succeeded,
+                    status=status,
+                    errors=raw.errors or None,
+                    warnings=warnings or None,
+                    fields=len(metrics),
+                    commit=False,
+                )
+                if managed_tx:
+                    target.commit()
+            except BaseException:
+                if managed_tx and target.in_transaction:
+                    target.rollback()
+                raise
         info = {
             "status": status,
             "partial": status == "partial",
@@ -280,12 +403,21 @@ class Engine:
             info["error"] = t('server.engine._sync_day_locked.269f45686', succeeded=succeeded, total=total)
         return snapshot, stored, info
 
-    def _sync_days(self, dates: list[str]) -> list[dict]:
+    def _sync_days(
+        self,
+        dates: list[str],
+        conn: sqlite3.Connection | None = None,
+        *,
+        expected_clear_gen: tuple[int, int] | None = None,
+    ) -> list[dict]:
+        target = conn or self.conn
+        with self._clear_lock:
+            batch_gen = self._current_clear_gen(target) if expected_clear_gen is None else expected_clear_gen
         results: list[dict] = []
         for index, date in enumerate(dates):
             self._progress(phase="syncing", day=date, days_completed=index, days_total=len(dates))
             try:
-                snapshot, stored, info = self._sync_day(date)
+                snapshot, stored, info = self._sync_day(date, conn=conn, expected_clear_gen=batch_gen)
                 results.append(
                     {
                         "date": date,
@@ -304,45 +436,46 @@ class Engine:
     # ---------- 后台任务（队列 + 并发） ----------
 
     def is_running(self) -> bool:
-        coordinator = self._coordinator
-        return self._outstanding > 0 or bool(self._pending) or bool(coordinator is not None and coordinator.is_alive())
+        with self._queue_lock:
+            coordinator = self._coordinator
+            return bool(self._inflight) or bool(self._pending) or bool(coordinator is not None and coordinator.is_alive())
 
     def start_background(self, dates: list[str]) -> dict:
         """把日期加入同步队列；已有任务在跑时继续排队，不再拒绝。
 
-        返回的 `queued` 是**当前在飞的总数**（排队中 + 正在处理），而不是仅排队数：
-        协调线程什么时候取走待处理项是非确定的，用纯 pending 长度会让调用方
-        （和测试）看到时而 1 时而 0 的数字。
+        返回的 `outstanding` 是**当前在飞的总数**（排队中 + 已出队待 worker 取走 + 正在处理）。
         """
         cleaned = [date for date in dict.fromkeys(dates) if date]
-        with self._queue_lock:
-            added = 0
-            for date in cleaned:
-                if date not in self._pending and date not in self._active:
-                    self._pending.append(date)
-                    added += 1
-            self._outstanding += added
-            outstanding = self._outstanding
-            if self._coordinator is None or not self._coordinator.is_alive():
-                self._coordinator = threading.Thread(target=self._coordinator_run, daemon=True)
-                self._coordinator.start()
-        # 键名刻意不叫 `queued`：那个词在 status() 里指"还在排队"，这里指"在飞总数"。
-        # 同名不同义会让调用方（和前端）莫名跳变。
+        with self._clear_lock:
+            enqueue_gen = self._current_clear_gen()
+            with self._queue_lock:
+                added = 0
+                for date in cleaned:
+                    if self._inflight.get(date) != enqueue_gen:
+                        self._inflight[date] = enqueue_gen
+                        self._pending.append((date, enqueue_gen))
+                        added += 1
+                self._outstanding = len(self._inflight)
+                outstanding = self._outstanding
+                if self._coordinator is None:
+                    self._coordinator = threading.Thread(target=self._coordinator_run, daemon=True)
+                    self._coordinator.start()
         return {"outstanding": outstanding, "added": added, "workers": self.workers}
 
     def _coordinator_run(self) -> None:
-        # 用循环处理「跑完一批又来了新日期」，不要递归调用自己：
-        # 连续排队很多轮会把调用栈越堆越深，且异常时的栈难读。
+        # 锁内检查并置空 _coordinator，避免退出临界区与新提交的竞态。
         while True:
             with self._queue_lock:
+                if not self._pending:
+                    self._coordinator = None
+                    return
                 batch = list(self._pending)
                 self._pending.clear()
-            if not batch:
-                return
             self._run_batch(batch)
 
-    def _run_batch(self, batch: list[str]) -> None:
-        self.progress.update(
+    def _run_batch(self, batch: list[tuple[str, tuple[int, int]]]) -> None:
+        batch_max_gen = max((gen for _, gen in batch), default=(0, 0))
+        self._progress(
             running=True,
             phase="syncing",
             days_total=len(batch),
@@ -363,12 +496,12 @@ class Engine:
                     with result_lock:
                         if not batch:
                             return
-                        date = batch.pop(0)
+                        date, enqueue_gen = batch.pop(0)
                         self._active.add(date)
-                        self.progress["active"] = sorted(self._active)
-                        self.progress["day"] = date
+                        active_snapshot = sorted(self._active)
+                    self._progress(active=active_snapshot, day=date)
                     try:
-                        snapshot, stored, info = self._sync_day(date, conn)
+                        snapshot, stored, info = self._sync_day(date, conn, expected_clear_gen=enqueue_gen)
                         with result_lock:
                             results.append(
                                 {
@@ -390,10 +523,14 @@ class Engine:
                     finally:
                         with result_lock:
                             self._active.discard(date)
-                            self.progress["active"] = sorted(self._active)
+                            active_snapshot = sorted(self._active)
+                        with self._progress_lock:
+                            self.progress["active"] = active_snapshot
                             self.progress["days_completed"] = self.progress.get("days_completed", 0) + 1
                         with self._queue_lock:
-                            self._outstanding = max(0, self._outstanding - 1)
+                            if self._inflight.get(date) == enqueue_gen:
+                                del self._inflight[date]
+                            self._outstanding = len(self._inflight)
             finally:
                 conn.close()
 
@@ -406,50 +543,78 @@ class Engine:
         for thread in threads:
             thread.join()
 
-        if auth_errors:
-            # 授权失效会中止整批，被放弃的日期必须留下痕迹：
-            # 否则用户只看到一条错误，不知道哪些天没同步。
-            done = {item.get("date") for item in results}
-            skipped = [date for date in batch if date not in done]
-            self.last_result = {
-                "status": "auth_error",
-                "error": str(auth_errors[0]),
-                "results": results,
-                "skipped": skipped,
-                "finished_at": utc_now_iso(),
-            }
-            self.progress.update(phase="error", message=str(auth_errors[0]))
-        else:
-            failed = [item for item in results if item.get("status") == "error"]
-            partial_days = [item for item in results if item.get("status") == "partial"]
-            self.last_result = {
-                "status": "ok" if not failed else "partial",
-                "results": results,
-                "partial_days": len(partial_days),
-                "failed_days": len(failed),
-                "finished_at": utc_now_iso(),
-            }
-            self.progress.update(phase="done", message=t('server.engine._run_batch.d55127406', p1=len(results)))
-        self.progress.update(running=False, active=[], day=None)
+        with self._clear_lock:
+            with closing(db.connect(self.cfg.db_path)) as check_conn:
+                cleared = self._current_clear_gen(check_conn) != batch_max_gen
+            if cleared:
+                with self._progress_lock:
+                    self.last_result = None
+                    self.progress.update(
+                        running=False,
+                        phase="idle",
+                        active=[],
+                        day=None,
+                        days_total=0,
+                        days_completed=0,
+                        message=None,
+                    )
+            elif auth_errors:
+                done = {item.get("date") for item in results}
+                skipped = [date for date, _ in batch if date not in done]
+                with self._progress_lock:
+                    self.last_result = {
+                        "status": "auth_error",
+                        "error": str(auth_errors[0]),
+                        "results": results,
+                        "skipped": skipped,
+                        "finished_at": utc_now_iso(),
+                    }
+                    self.progress.update(running=False, phase="error", active=[], day=None, message=str(auth_errors[0]))
+            else:
+                failed = [item for item in results if item.get("status") == "error"]
+                partial_days = [item for item in results if item.get("status") == "partial"]
+                with self._progress_lock:
+                    self.last_result = {
+                        "status": "ok" if not failed else "partial",
+                        "results": results,
+                        "partial_days": len(partial_days),
+                        "failed_days": len(failed),
+                        "finished_at": utc_now_iso(),
+                    }
+                    self.progress.update(
+                        running=False,
+                        phase="done",
+                        active=[],
+                        day=None,
+                        message=t('server.engine._run_batch.d55127406', p1=len(results)),
+                    )
         with self._queue_lock:
-            # 授权错误会提前停止整批，被放弃的日期不会再走 finally 里的减计数，
-            # 所以这里按「仍在排队的日期数」重新对齐，避免 is_running 永远为真。
-            self._outstanding = len(self._pending)
+            for remaining_date, remaining_gen in batch:
+                if self._inflight.get(remaining_date) == remaining_gen:
+                    del self._inflight[remaining_date]
+            self._outstanding = len(self._inflight)
 
     def status(self) -> dict:
+        with self._progress_lock:
+            progress = {**self.progress, "active": list(self.progress.get("active") or [])}
+            last_result = self.last_result
+        with self._queue_lock:
+            queued = len(self._pending)
         return {
             "running": self.is_running(),
-            "progress": dict(self.progress),
-            "queued": len(self._pending),
+            "progress": progress,
+            "queued": queued,
             "workers": self.workers,
-            "last_result": self.last_result,
+            "last_result": last_result,
         }
 
     def _fetch_progress(self, completed: int, total: int, key: str | None = None) -> None:
-        self.progress.update(phase="fetching", completed=completed, total=total, current_key=key)
+        with self._progress_lock:
+            self.progress.update(phase="fetching", completed=completed, total=total, current_key=key)
 
     def _progress(self, **fields) -> None:
-        self.progress.update(**fields)
+        with self._progress_lock:
+            self.progress.update(**fields)
 
     # ---------- 自动同步 ----------
 
@@ -457,22 +622,25 @@ class Engine:
         """后台自动同步循环（供 serve 使用；建议只用于常驻进程）。"""
         while not stop_event.wait(check_seconds):
             try:
-                self.auto_sync_tick()
-            except Exception:  # noqa: BLE001 — 自动同步绝不能让进程崩溃
-                pass
+                with closing(db.connect(self.cfg.db_path)) as conn:
+                    self.auto_sync_tick(conn=conn)
+            except Exception:  # noqa: BLE001 — 自动同步绝不能让进程崩溃，但必须记录异常供排查
+                LOG.exception("Auto-sync tick failed")
 
-    def auto_sync_tick(self) -> list[dict] | None:
-        settings = storage.load_settings(self.conn)
+    def auto_sync_tick(self, conn: sqlite3.Connection | None = None) -> list[dict] | None:
+        target = conn or self.conn
+        settings = storage.load_settings(target)
         interval = int(settings.get("sync_interval_minutes") or 0)
         if interval <= 0:
             return None
-        name = str(settings.get("provider") or "google-health")
+        name = self.provider_name(target)
         provider = get_provider(name)
         if provider.auth_kind == "oauth":
-            credentials = self.credentials_for(name)
+            credentials = self.credentials_for(name, target)
             if not credentials or credentials.get("needs_reconnect"):
                 return None
-        last = storage.last_successful_sync(self.conn)
+        # 包含 empty，避免连续无数据的日期退化成每 60 秒轮询一次。
+        last = storage.last_completed_sync(target)
         if last is not None:
             age_seconds = (parse_utc(utc_now_iso()) - parse_utc(last)).total_seconds()
             if age_seconds < interval * 60:
@@ -480,38 +648,38 @@ class Engine:
         if not self._lock.acquire(blocking=False):
             return None
         try:
-            dates, notice = self._autosync_dates()
-            results = self._sync_days(dates)
+            with self._clear_lock:
+                start_gen = self._current_clear_gen(target)
+            dates, notice = self._autosync_dates(target)
+            results = self._sync_days(dates, conn=target, expected_clear_gen=start_gen)
             if notice:
-                self.last_result = {**(self.last_result or {}), "notice": notice}
+                with self._clear_lock:
+                    if self._current_clear_gen(target) == start_gen:
+                        with self._progress_lock:
+                            self.last_result = {**(self.last_result or {}), "notice": notice}
             return results
         finally:
             self._lock.release()
 
-    def _autosync_dates(self) -> tuple[list[str], str | None]:
-        """算出自动同步要补哪些日期。
-
-        只抓 [昨天, 今天] 会有洞：服务停几天再起来，中间那几天永远不会被补，
-        而 `last_successful_sync` 会立刻更新，于是「数据缺口」被悄悄跳过。
-        所以从「已覆盖到哪天」往后补齐，但设上限，避免首次部署或长期停机后
-        一次抓住几十天。返回 (日期列表, 提示文案或 None)。
-        """
+    def _autosync_dates(self, conn: sqlite3.Connection | None = None) -> tuple[list[str], str | None]:
+        """算出自动同步要补哪些日期（含回补窗口内中间失败后尚未恢复的日期）。"""
+        target = conn or self.conn
         today = iso_today()
-        anchor = storage.last_synced_date(self.conn) or storage.latest_day_date(self.conn)
-        if anchor is None or anchor >= today:
-            # 没同步过，或已经覆盖到今天：维持原有行为（昨天 + 今天，今天要重抓以拿增量）。
-            #
-            # 注意一个看似回归、实则收敛的行为：锚点=昨天时，下面按 gap 算只返回
-            # [今天]，比原来的固定 [昨天, 今天] 少抓一天。**不要"修"成 gap+1**：
-            # 下一轮 tick 锚点变成今天，又会命中本分支返回 [昨天, 今天]，昨天随即补齐。
-            # 也就是说这是"延迟一个 tick"（≤ 同步间隔），不是漏抓；改成 gap+1 反而
-            # 会把锚点那天重复抓一遍。
-            return [shift_iso(today, -1), today], None
-        gap_days = (parse_iso(today) - parse_iso(anchor)).days
+        window_start = shift_iso(today, -(AUTOSYNC_BACKFILL_LIMIT_DAYS - 1))
+        failed_dates = storage.failed_dates_in_window(target, window_start, today)
+        anchor = storage.last_synced_date(target) or storage.latest_day_date(target)
         notice = None
-        if gap_days > AUTOSYNC_BACKFILL_LIMIT_DAYS:
-            notice = (
-                t('server.engine._autosync_dates.0c6a416ce', gap_days=gap_days, AUTOSYNC_BACKFILL_LIMIT_DAYS=AUTOSYNC_BACKFILL_LIMIT_DAYS, p3=AUTOSYNC_BACKFILL_LIMIT_DAYS)
-            )
-            gap_days = AUTOSYNC_BACKFILL_LIMIT_DAYS
-        return iso_range(today, gap_days), notice
+        if anchor is None or anchor >= today:
+            base_dates = [shift_iso(today, -1), today]
+        else:
+            gap_days = (parse_iso(today) - parse_iso(anchor)).days
+            if gap_days > AUTOSYNC_BACKFILL_LIMIT_DAYS:
+                notice = (
+                    t('server.engine._autosync_dates.0c6a416ce', gap_days=gap_days, AUTOSYNC_BACKFILL_LIMIT_DAYS=AUTOSYNC_BACKFILL_LIMIT_DAYS, p3=AUTOSYNC_BACKFILL_LIMIT_DAYS)
+                )
+                gap_days = AUTOSYNC_BACKFILL_LIMIT_DAYS
+            base_dates = iso_range(today, gap_days)
+        merged = sorted({*base_dates, *failed_dates})
+        if len(merged) > AUTOSYNC_BACKFILL_LIMIT_DAYS:
+            merged = merged[-AUTOSYNC_BACKFILL_LIMIT_DAYS:]
+        return merged, notice

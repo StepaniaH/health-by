@@ -52,8 +52,8 @@ def test_translate_pipeline_end_to_end():
     snapshot = provider.translate(raw)
     assert snapshot.source == "synthetic"
     assert snapshot.date == DAY
-    assert snapshot.coverage.endpoint_count == 31
-    assert snapshot.coverage.success_count == 31
+    assert snapshot.coverage.endpoint_count == 30
+    assert snapshot.coverage.success_count == 30
     assert snapshot.activity.steps is not None
     assert snapshot.device is not None and snapshot.profile.display_name == "Synthetic user"
 
@@ -132,3 +132,54 @@ def test_local_data_command_creates_an_unregistered_source_archive(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "google-health" in result.stdout
+
+
+def test_make_dev_data_preserves_existing_non_synthetic_rows(tmp_path, product_provider_defaults):
+    """在已有库上追加合成开发数据时，无论区间内外，均不得篡改或覆盖已有 fitbit-export 真实记录。"""
+    from devtools.make_dev_data import build
+    from health_by import db, storage
+    from health_by.config import Config
+    from health_by.models import ActivityDay, DaySnapshot
+    from health_by.providers.base import RawDay
+    from health_by.util import iso_today, shift_iso
+
+    data_dir = tmp_path / "existing-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    db_path = Config(data_dir=data_dir).db_path
+    conn = db.connect(db_path)
+    db.migrate(conn)
+    old_date = "2020-01-01"
+    overlap_date = iso_today()
+    yesterday = shift_iso(overlap_date, -1)
+    for d, steps in ((old_date, 4321), (overlap_date, 7777)):
+        storage.store_day(
+            conn,
+            DaySnapshot(d, "fitbit-export", f"{d}T00:00:00Z", activity=ActivityDay(steps=steps)),
+            RawDay(d, "fitbit-export", f"{d}T00:00:00Z", {"fitbit_marker": steps}),
+        )
+    conn.close()
+
+    build(out_dir=data_dir, days=2)
+
+    conn = db.connect(db_path)
+    try:
+        for d, steps in ((old_date, 4321), (overlap_date, 7777)):
+            kept = conn.execute("SELECT source FROM days WHERE date = ?", (d,)).fetchone()
+            kept_raw = conn.execute("SELECT source, payload FROM raw_days WHERE date = ?", (d,)).fetchone()
+            assert kept["source"] == "fitbit-export"
+            assert kept_raw["source"] == "fitbit-export"
+            assert storage.decode_raw_payload(kept_raw["payload"]) == {"fitbit_marker": steps}
+            assert storage.get_day(conn, d)["activity"]["steps"] == steps
+        generated = conn.execute("SELECT source FROM days WHERE date = ?", (yesterday,)).fetchone()
+        assert generated["source"] == "google-health"
+    finally:
+        conn.close()
+
+    # 若目标目录仅含未迁移的旧名 fitbit-by.db，拒绝并排新建 health-by.db
+    legacy_dir = tmp_path / "legacy-only-dir"
+    legacy_dir.mkdir()
+    legacy_file = legacy_dir / "fitbit-by.db"
+    legacy_file.write_bytes(b"legacy")
+    assert build(out_dir=legacy_dir, days=2) == 1
+    assert not (legacy_dir / "health-by.db").exists()
+    assert legacy_file.read_bytes() == b"legacy"

@@ -1,4 +1,4 @@
-"""Google Health provider：OAuth + 31 类数据抓取 + 翻译。"""
+"""Google Health provider：OAuth + 30 类数据抓取 + 翻译。"""
 
 from __future__ import annotations
 
@@ -129,13 +129,20 @@ class GoogleHealthProvider(Provider):
             return client.daily_rollup(token, job.dtype, trend_start, day_after)
         if job.kind == "intraday":
             return client.list_data(token, job.dtype, job.record, date, day_after, family=job.family, op="list")
-        window_start = ecg_start if job.window == "ecg" else trend_start
+        if job.window == "ecg":
+            # ECG 的 Google Health 过滤条件仅支持 `>=` UTC 下界；下界提前 1 天覆盖 UTC+01..UTC+14 偏移，
+            # 当地日历上下界 [ecg_start, date] 由翻译层按每条记录的 startUtcOffset 精确裁切。
+            window_start = shift_iso(ecg_start, -1)
+            window_end = day_after
+        else:
+            window_start = trend_start
+            window_end = day_after
         return client.list_data(
             token,
             job.dtype,
             job.record,
             window_start,
-            day_after,
+            window_end,
             family=job.family,
             op=job.op,
             page_size=job.page_size,

@@ -30,6 +30,27 @@ function withTitle(node, text) {
   return node;
 }
 
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MS_PER_DAY = 86400000;
+
+function parseIsoDay(value) {
+  const match = typeof value === "string" ? ISO_DATE_RE.exec(value) : null;
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  if (utc.getUTCFullYear() !== year || utc.getUTCMonth() !== month - 1 || utc.getUTCDate() !== day) {
+    return null;
+  }
+  return Math.round(utc.getTime() / MS_PER_DAY);
+}
+
+function formatIsoMonthDay(dayNum) {
+  const iso = new Date(dayNum * MS_PER_DAY).toISOString().slice(0, 10);
+  return iso.slice(5);
+}
+
 export const SLEEP_STAGE_LABELS = { deep: t("web.charts.labels.ee3d90ef1"), light: t("web.charts.labels.7073c4c57"), rem: t("web.charts.labels.64e20b077"), wake: t("web.charts.labels.c19450348") };
 export const SLEEP_STAGE_COLORS = {
   deep: "var(--m-sleep-deep)",
@@ -82,7 +103,7 @@ export function barChart({ points, goal = null, color = "var(--m-steps)", unit =
       fill: color,
       rx: 1,
     });
-    withTitle(rect, `${point.label}：${point.value}${unit}`);
+    withTitle(rect, `${point.label}${t("separator.colon")}${point.value}${unit}`);
     svg.appendChild(rect);
   });
   if (goal) {
@@ -115,15 +136,52 @@ export function lineChart({ points, baseline = null, color = "var(--m-heart)", u
   let max = Math.max(...values, ...(baseline !== null && baseline !== undefined ? [baseline] : []));
   if (min === max) { min -= 1; max += 1; }
   const pad = 4;
-  const x = (i) => pad + (i * (width - pad * 2)) / Math.max(1, points.length - 1);
+  const plotWidth = Math.max(0, width - pad * 2);
+  const dayNumbers = points.map((p) => parseIsoDay(p.date ?? p.label));
+  const useCalendarDays = points.length > 0 && dayNumbers.every((day) => day !== null);
+  const xCoords = useCalendarDays ? dayNumbers : points.map((_, i) => i);
+  const minX = Math.min(...xCoords);
+  const maxX = Math.max(...xCoords);
+  const xSpan = maxX - minX;
+  const x = (i) => (xSpan > 0 ? pad + ((xCoords[i] - minX) / xSpan) * plotWidth : pad + plotWidth / 2);
   const y = (v) => height - pad - ((v - min) / (max - min)) * (height - pad * 2);
 
   const svg = el("svg", { viewBox: `0 0 ${width} ${height}`, class: "chart", role: "img", "aria-label": ariaLabel });
   svg.appendChild(el("line", { x1: 2, x2: width - 2, y1: height - 2, y2: height - 2, stroke: "var(--rule)", "stroke-width": 1 }));
-  svg.appendChild(el("polyline", {
-    points: validIndices.map((i) => `${x(i)},${y(points[i].value)}`).join(" "),
-    fill: "none", stroke: color, "stroke-width": 1.75, "stroke-linejoin": "round", "stroke-linecap": "round",
-  }));
+  if (useCalendarDays) {
+    // 连续相邻日画实线；跨越缺测多日用淡虚线连接，既保留稀疏称重趋势又不误导成连续观测。
+    let solid = [];
+    const flushSolid = () => {
+      if (solid.length >= 2) {
+        svg.appendChild(el("polyline", {
+          points: solid.map((i) => `${x(i)},${y(points[i].value)}`).join(" "),
+          fill: "none", stroke: color, "stroke-width": 1.75, "stroke-linejoin": "round", "stroke-linecap": "round",
+        }));
+      }
+      solid = [];
+    };
+    for (let pos = 0; pos < validIndices.length; pos++) {
+      const idx = validIndices[pos];
+      const prevIdx = pos > 0 ? validIndices[pos - 1] : null;
+      if (prevIdx !== null && (xCoords[idx] - xCoords[prevIdx]) > 1) {
+        flushSolid();
+        svg.appendChild(el("line", {
+          x1: x(prevIdx), y1: y(points[prevIdx].value),
+          x2: x(idx), y2: y(points[idx].value),
+          stroke: color, "stroke-width": 1.25, "stroke-dasharray": "3 3", opacity: 0.45,
+        }));
+        solid = [idx];
+      } else {
+        solid.push(idx);
+      }
+    }
+    flushSolid();
+  } else {
+    svg.appendChild(el("polyline", {
+      points: validIndices.map((i) => `${x(i)},${y(points[i].value)}`).join(" "),
+      fill: "none", stroke: color, "stroke-width": 1.75, "stroke-linejoin": "round", "stroke-linecap": "round",
+    }));
+  }
   validIndices.forEach((i, order) => {
     const isLast = order === validIndices.length - 1;
     const dot = el("circle", {
@@ -131,7 +189,7 @@ export function lineChart({ points, baseline = null, color = "var(--m-heart)", u
       r: isLast ? 2.8 : 1.8,
       fill: color, opacity: isLast ? 1 : 0.55,
     });
-    withTitle(dot, `${points[i].label}：${points[i].value}${unit}`);
+    withTitle(dot, `${points[i].label}${t("separator.colon")}${points[i].value}${unit}`);
     svg.appendChild(dot);
   });
   if (baseline !== null && baseline !== undefined) {
@@ -180,6 +238,8 @@ export function timelineRibbon({ sleep = null, stages = [], intraday = [], worko
 
   const x = (hours) => PAD + (Math.min(24, Math.max(0, hours)) / 24) * span;
   const fracOfIso = (value) => {
+    const match = String(value || "").match(/T(\d{2}):(\d{2})/);
+    if (match) return Number(match[1]) + Number(match[2]) / 60;
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed.getHours() + parsed.getMinutes() / 60;
   };
@@ -321,10 +381,17 @@ export function scatterChart({
     svg.appendChild(yLabel);
   }
   if (slope !== null && slope !== undefined && intercept !== null && intercept !== undefined) {
+    const clipId = `scatter-clip-${Math.random().toString(36).slice(2, 8)}`;
+    const defs = el("defs");
+    const clipPath = el("clipPath", { id: clipId });
+    clipPath.appendChild(el("rect", { x: pad.l, y: pad.t, width: Math.max(0, width - pad.l - pad.r), height: Math.max(0, height - pad.t - pad.b) }));
+    defs.appendChild(clipPath);
+    svg.appendChild(defs);
     const yAt = (v) => intercept + slope * v;
     svg.appendChild(el("line", {
       x1: px(xmin), y1: py(yAt(xmin)), x2: px(xmax), y2: py(yAt(xmax)),
       stroke: "var(--ink-3)", "stroke-width": 1.25, "stroke-dasharray": "4 4",
+      "clip-path": `url(#${clipId})`,
     }));
   }
   if (annotation) {
@@ -340,7 +407,7 @@ export function scatterChart({
   return svg;
 }
 
-// 基线带折线：值 + 滚动均值 ± 1σ（阴影为带）
+// 基线带折线：值 + 滚动均值 ± 1σ（阴影为带；按真实日历日映射横坐标，跨缺天断线）
 export function bandChart({
   points, color = "var(--m-heart)", width = 960, height = 126,
   yFormat = (v) => String(Math.round(v)), highlightColor = "var(--warn)", ariaLabel = t("web.charts.bandChart.324cc3a3a"), tickStep = null,
@@ -361,7 +428,18 @@ export function bandChart({
   const margin = (max - min) * 0.1;
   min -= margin; max += margin;
   const pad = { l: 52, r: 6, t: 8, b: 14 };
-  const x = (index) => pad.l + (index * (width - pad.l - pad.r)) / Math.max(1, points.length - 1);
+  const plotWidth = Math.max(0, width - pad.l - pad.r);
+  const dayNumbers = points.map((point) => parseIsoDay(point.date ?? point.label));
+  const useCalendarDays = points.length > 0 && dayNumbers.every((day) => day !== null);
+  const xCoords = useCalendarDays ? dayNumbers : points.map((_, index) => index);
+  const minX = Math.min(...xCoords);
+  const maxX = Math.max(...xCoords);
+  const xSpan = maxX - minX;
+  const xPos = (coord) => (xSpan > 0 ? pad.l + ((coord - minX) / xSpan) * plotWidth : pad.l + plotWidth / 2);
+  const x = (index) => xPos(xCoords[index]);
+  const isAdjacent = (prevIndex, index) => (
+    useCalendarDays ? (xCoords[index] - xCoords[prevIndex]) === 1 : (index - prevIndex) === 1
+  );
   const y = (value) => height - pad.b - ((value - min) / (max - min)) * (height - pad.t - pad.b);
 
   // 取整刻度，避免出现 2.1 / 6.7 / 11.2 这类跟随极值的刻度
@@ -398,6 +476,9 @@ export function bandChart({
   points.forEach((point, index) => {
     const hasBand = point.lo !== null && point.lo !== undefined && point.hi !== null && point.hi !== undefined;
     if (hasBand) {
+      if (current && current.length && !isAdjacent(current[current.length - 1], index)) {
+        current = null;
+      }
       if (!current) { current = []; runs.push(current); }
       current.push(index);
     } else {
@@ -412,7 +493,7 @@ export function bandChart({
   }
 
   const valueIndices = points.map((p, index) => (p.value !== null && p.value !== undefined ? index : -1)).filter((index) => index >= 0);
-  // 缺失值处断开折线，避免跨空白段拉出虚假直线
+  // 缺失值或跨日历空档处断开折线，避免跨多日缺档拉出虚假直线
   let segment = [];
   const flushSegment = () => {
     if (segment.length >= 2) {
@@ -424,8 +505,14 @@ export function bandChart({
     segment = [];
   };
   points.forEach((point, index) => {
-    if (point.value !== null && point.value !== undefined) segment.push(index);
-    else flushSegment();
+    if (point.value !== null && point.value !== undefined) {
+      if (segment.length && !isAdjacent(segment[segment.length - 1], index)) {
+        flushSegment();
+      }
+      segment.push(index);
+    } else {
+      flushSegment();
+    }
   });
   flushSegment();
   valueIndices.forEach((index, order) => {
@@ -433,27 +520,46 @@ export function bandChart({
     const isLast = order === valueIndices.length - 1;
     const outOfBand = (point.lo !== null && point.lo !== undefined && point.value < point.lo)
       || (point.hi !== null && point.hi !== undefined && point.value > point.hi);
-    svg.appendChild(el("circle", {
+    const dot = el("circle", {
       cx: x(index),
       cy: y(point.value),
       r: outOfBand ? 2.5 : isLast ? 2.6 : 1.7,
       fill: outOfBand ? highlightColor : color,
       opacity: outOfBand ? 0.95 : isLast ? 1 : 0.5,
-    }));
+    });
+    const labelText = point.label || point.date || "";
+    const prefix = labelText ? labelText + t("separator.colon") : "";
+    withTitle(dot, prefix + yFormat(point.value));
+    svg.appendChild(dot);
   });
   if (points.length) {
-    const first = el("text", { x: pad.l, y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "start" });
-    first.textContent = points[0].label || "";
-    svg.appendChild(first);
-    if (points.length > 10) {
-      const midIndex = Math.floor((points.length - 1) / 2);
-      const mid = el("text", { x: x(midIndex), y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "middle" });
-      mid.textContent = points[midIndex].label || "";
-      svg.appendChild(mid);
+    if (xSpan === 0) {
+      const only = el("text", { x: xPos(minX), y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "middle" });
+      only.textContent = points[0].label || points[0].date || "";
+      svg.appendChild(only);
+    } else {
+      const first = el("text", { x: pad.l, y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "start" });
+      first.textContent = points[0].label || points[0].date || "";
+      svg.appendChild(first);
+      if (xSpan >= 10 && plotWidth >= 200) {
+        const midCoord = Math.round((minX + maxX) / 2);
+        let midText = "";
+        if (useCalendarDays) {
+          const exactIdx = xCoords.indexOf(midCoord);
+          midText = exactIdx >= 0 ? (points[exactIdx].label || points[exactIdx].date || "") : formatIsoMonthDay(midCoord);
+        } else {
+          midText = points[midCoord]?.label || "";
+        }
+        if (midText) {
+          const mid = el("text", { x: xPos(midCoord), y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "middle" });
+          mid.textContent = midText;
+          svg.appendChild(mid);
+        }
+      }
+      const last = el("text", { x: width - pad.r, y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "end" });
+      last.textContent = points[points.length - 1].label || points[points.length - 1].date || "";
+      svg.appendChild(last);
     }
-    const last = el("text", { x: width - pad.r, y: height - 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "end" });
-    last.textContent = points[points.length - 1].label || "";
-    svg.appendChild(last);
   }
   return svg;
 }
@@ -578,7 +684,7 @@ export function sparkline({ values, color = "var(--ink-3)", width = 84, height =
 export function hrDayChart({ points, resting = null, workouts = [], color = "var(--m-heart)", width = 960, height = 132, ariaLabel = t("web.charts.hrDayChart.ef0d62e7b") }) {
   width = fitWidth(width);
   if (!points || points.length < 2) return null;
-  const pad = { l: 6, r: 6, t: 12, b: 20 };
+  const pad = { l: 34, r: 10, t: 12, b: 20 };
   const toFrac = (hhmm) => {
     const [h, m] = String(hhmm).split(":").map(Number);
     return (h + (m || 0) / 60) / 24;
@@ -596,6 +702,17 @@ export function hrDayChart({ points, resting = null, workouts = [], color = "var
   const y = (value) => height - pad.b - ((value - min) / (max - min)) * (height - pad.t - pad.b);
 
   const svg = el("svg", { viewBox: `0 0 ${width} ${height}`, class: "chart", role: "img", "aria-label": ariaLabel });
+  const rawSpan = Math.max(max - min, 1) / 3;
+  const mag = 10 ** Math.floor(Math.log10(rawSpan));
+  const norm = rawSpan / mag;
+  const yStep = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+  for (let yv = Math.ceil(min / yStep) * yStep; yv <= max + 1e-9; yv += yStep) {
+    const rowY = y(yv);
+    svg.appendChild(el("line", { x1: pad.l, x2: width - pad.r, y1: rowY, y2: rowY, stroke: "var(--rule-soft)", "stroke-width": 1 }));
+    const yLabel = el("text", { x: pad.l - 5, y: rowY + 3, "font-size": 10, fill: "var(--ink-3)", "text-anchor": "end" });
+    yLabel.textContent = String(Math.round(yv));
+    svg.appendChild(yLabel);
+  }
   for (const workout of workouts) {
     const start = toFrac(String(workout.start_time).slice(11, 16));
     const end = start + ((workout.duration_minutes || 0) / 60) / 24;

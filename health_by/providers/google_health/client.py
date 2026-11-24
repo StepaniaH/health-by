@@ -37,7 +37,6 @@ SCOPES = [
     "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     "https://www.googleapis.com/auth/googlehealth.ecg.readonly",
     "https://www.googleapis.com/auth/googlehealth.irn.readonly",
-    "https://www.googleapis.com/auth/googlehealth.location.readonly",
     "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
     "https://www.googleapis.com/auth/googlehealth.profile.readonly",
     "https://www.googleapis.com/auth/googlehealth.settings.readonly",
@@ -184,6 +183,8 @@ def build_filter(dtype: str, record: str, start: str, end: str) -> str:
     if record == "sleep":
         return f'sleep.interval.civil_end_time >= "{start}" AND sleep.interval.civil_end_time < "{end}"'
     if record == "ecg":
+        # Google Health API v4 规定 electrocardiogram.interval.start_time 仅支持 `>=` 下界过滤；
+        # 当地日历上下界 [ecg_start, date] 由翻译层结合 startUtcOffset 精确裁切。
         return f'electrocardiogram.interval.start_time >= "{start}T00:00:00Z"'
     if record == "sample":
         return f'{field}.sample_time.civil_time >= "{start}" AND {field}.sample_time.civil_time < "{end}"'
@@ -257,9 +258,11 @@ class GoogleHealthClient:
                 attempt += 1
                 continue
             break
+        json_valid = True
         try:
             payload = response.json()
         except ValueError:
+            json_valid = False
             payload = {}
         if response.status_code == 401:
             raise ProviderAuthError(t('server.providers.google_health.client.request.7b0480e02'))
@@ -272,10 +275,15 @@ class GoogleHealthClient:
                 message or t('server.providers.google_health.client.request.7698647ea', p1=response.status_code),
                 status=response.status_code,
             )
-        return payload if isinstance(payload, dict) else {}
+        if not json_valid or not isinstance(payload, dict):
+            raise ProviderError(
+                t('server.providers.google_health.client.request.invalid_json', p1=response.status_code),
+                status=response.status_code,
+            )
+        return payload
 
     def _backoff_seconds(self, attempt: int) -> float:
-        """指数退避 + 抖动：同时重试的 31 个 job 不要挤在同一毫秒重发。"""
+        """指数退避 + 抖动：同时重试的 30 个 job 不要挤在同一毫秒重发。"""
         base = RETRY_BACKOFF_BASE * (2**attempt)
         jitter = random.uniform(0, RETRY_JITTER_SECONDS)
         return min(RETRY_CAP_SECONDS, base + jitter)

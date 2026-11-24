@@ -65,7 +65,7 @@ def test_migration_preserves_records_raw_data_settings_and_credentials_and_can_r
         assert api.get('/api/v1/summary', params={'date': '2026-10-25'}).status_code == 200
         with closing(db.connect(cfg.db_path)) as conn:
             raw = conn.execute('SELECT payload FROM raw_days').fetchone()[0]
-            assert isinstance(json.loads(raw), dict)
+            assert isinstance(storage.decode_raw_payload(raw), dict)
             assert storage.load_settings(conn)['goals']['steps'] == 8765
             secret = storage.load_credentials_raw(conn, 'ai')
             assert SecretStore(cfg.secret_key_path).decrypt_json(secret)['api_key'] == 'synthetic-secret'
@@ -179,3 +179,46 @@ os._exit(0)
     for name in (DB_NAME, LEGACY_DB_NAME + '.bak'):
         with closing(db.connect(old.with_name(name))) as conn:
             assert storage.get_setting(conn, 'wal_value') == 'included'
+
+
+def test_v002_demo_provider_migrates_cleanly_to_google_health(tmp_path, product_provider_defaults, caplog):
+    from health_by.engine import Engine
+
+    cfg = load_config(tmp_path / 'v002')
+    with closing(db.connect(cfg.db_path)) as conn:
+        conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        for version, sql in db.MIGRATIONS:
+            if version <= 8:
+                conn.executescript(sql)
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')")
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('provider', '\"demo\"')")
+        conn.commit()
+        db.migrate(conn)
+        assert int(conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()['value']) == db.SCHEMA_VERSION
+        assert storage.get_setting(conn, 'provider') == 'google-health'
+
+        # Runtime fallback also handles an unmigrated 'demo' setting gracefully.
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('provider', '\"demo\"')")
+        conn.commit()
+        eng = Engine(cfg, conn)
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert eng.provider_name() == 'google-health'
+            assert "Legacy provider 'demo' was removed" in caplog.text
+        finally:
+            eng.shutdown()
+            eng.close()
+
+    # End-to-end startup from a v8 DB with provider="demo" succeeds cleanly.
+    with closing(db.connect(cfg.db_path)) as conn:
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '8')")
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('provider', '\"demo\"')")
+        conn.commit()
+    app = create_app(cfg)
+    try:
+        with TestClient(app) as api:
+            response = api.get('/api/v1/status')
+            assert response.status_code == 200
+            assert response.json()['provider']['provider'] == 'google-health'
+    finally:
+        pass

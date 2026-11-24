@@ -154,17 +154,17 @@ def test_day_with_no_usable_data_is_not_stored(conn, tmp_cfg):
 
     class AllEmpty(SyntheticProvider):
         def translate(self, raw):
+            from health_by.models import ActivityDay, BodyDay, HealthAlerts, HeartDay
+
             snapshot = super().translate(raw)
             snapshot.sleep = None
+            snapshot.naps_count = None
+            snapshot.naps_minutes = None
             snapshot.workouts = []
-            for attribute in ("steps", "calories_out", "distance_km", "floors", "active_minutes",
-                              "zone_minutes", "sedentary_minutes"):
-                setattr(snapshot.activity, attribute, None)
-            for attribute in ("resting_hr", "hrv_ms", "spo2", "breathing_rate",
-                              "skin_temp_delta_c", "core_temp_c", "vo2max"):
-                setattr(snapshot.heart, attribute, None)
-            for attribute in ("weight_kg", "body_fat_pct", "water_ml", "calories_in"):
-                setattr(snapshot.body, attribute, None)
+            snapshot.activity = ActivityDay()
+            snapshot.heart = HeartDay()
+            snapshot.body = BodyDay()
+            snapshot.alerts = HealthAlerts()
             return snapshot
 
     engine = Engine(tmp_cfg, conn)

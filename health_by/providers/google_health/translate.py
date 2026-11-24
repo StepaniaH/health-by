@@ -10,6 +10,7 @@ from health_by.i18n import t
 
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+import math
 from typing import Any, Callable
 
 from ...models import (
@@ -26,7 +27,9 @@ from ...models import (
     TimePoint,
     Workout,
 )
+from ...util import shift_iso
 from ..base import RawDay
+from .registry import ECG_DAYS
 
 # ---------- 解析失败记录 ----------
 
@@ -395,9 +398,12 @@ def _steps_intraday(payload: dict, date: str) -> list[TimePoint]:
     return points
 
 
-def _hr_intraday(payload: dict, date: str) -> list[TimePoint]:
-    """分时心率只保留归属选中民用日的点（窗口载荷含多天，必须过滤）。"""
+def _hr_intraday_with_extremes(
+    payload: dict, date: str
+) -> tuple[list[TimePoint], float | None, float | None, float | None]:
+    """分时心率只保留归属选中民用日的点；hr_min/hr_max 取原始有效采样极值，hr_intraday/hr_avg 按分钟聚合。"""
     points: list[TimePoint] = []
+    raw_beats: list[float] = []
     for point in _dominant_points(_points(payload, "heartIntradayRaw")):
         record = point.get("heartRate") if isinstance(point.get("heartRate"), dict) else {}
         sample = record.get("sampleTime") if isinstance(record.get("sampleTime"), dict) else {}
@@ -410,17 +416,70 @@ def _hr_intraday(payload: dict, date: str) -> list[TimePoint]:
             sample.get("physicalTime"), sample.get("utcOffset")
         )
         beats = _float(record.get("beatsPerMinute"))
-        if time and beats:
-            points.append(TimePoint(time=time, value=beats))
+        if beats is not None and math.isfinite(beats) and beats > 0:
+            raw_beats.append(beats)
+            if time:
+                points.append(TimePoint(time=time, value=beats))
     # 真实设备心率约 2–3 秒一个采样（~3.5 万点/天）。按分钟求均值入库：
     # 保留日内曲线细节，同时避免单日快照膨胀到 1MB+（290 天/年 ≈ 24MB）。
     buckets: dict[str, list[float]] = {}
     for point in points:
         buckets.setdefault(point.time, []).append(point.value)
-    return [
+    intraday = [
         TimePoint(time=time, value=round(sum(values) / len(values), 1))
         for time, values in sorted(buckets.items())
     ]
+    hr_min = round(min(raw_beats), 1) if raw_beats else None
+    hr_max = round(max(raw_beats), 1) if raw_beats else None
+    minute_values = [point.value for point in intraday if point.value]
+    hr_avg = round(sum(minute_values) / len(minute_values), 1) if minute_values else None
+    return intraday, hr_min, hr_max, hr_avg
+
+
+def _hr_intraday(payload: dict, date: str) -> list[TimePoint]:
+    return _hr_intraday_with_extremes(payload, date)[0]
+
+
+def _irn_alert_date(point: dict) -> str | None:
+    """提取不规则心律通知的民用日期；若合成测试项不含任何时间字段则返回 None。"""
+    containers: list[dict] = []
+    for key in ("irregularRhythmNotification", "irregularRhythmAlert", "notification"):
+        child = point.get(key)
+        if isinstance(child, dict):
+            containers.append(child)
+    containers.append(point)
+    for item in containers:
+        interval = item.get("interval") if isinstance(item.get("interval"), dict) else None
+        if interval:
+            found = (
+                _date_from_civil(interval.get("civilStartTime"))
+                or _civil_date(interval.get("startTime"), interval.get("startUtcOffset"))
+                or _date_from_civil(interval.get("civilEndTime"))
+                or _civil_date(interval.get("endTime"), interval.get("endUtcOffset"))
+            )
+            if found:
+                return found
+        for sample_key in ("sampleTime", "alertTime", "eventTime"):
+            sample = item.get(sample_key) if isinstance(item.get(sample_key), dict) else None
+            if sample:
+                found = _date_from_civil(sample.get("civilTime")) or _civil_date(
+                    sample.get("physicalTime"), sample.get("utcOffset")
+                )
+                if found:
+                    return found
+        if isinstance(item.get("date"), dict):
+            found = _date_from_civil(item.get("date"))
+            if found:
+                return found
+        for key in ("startTime", "endTime", "timestamp", "notificationTime", "alertTime", "eventTime", "time", "date"):
+            raw_val = item.get(key)
+            if isinstance(raw_val, str) and raw_val.strip():
+                found = _civil_date(raw_val, item.get("utcOffset") or item.get("startUtcOffset"))
+                if found:
+                    return found
+                if len(raw_val) >= 10 and raw_val[4] == "-" and raw_val[7] == "-":
+                    return raw_val[:10]
+    return None
 
 
 # ---------- 主翻译 ----------
@@ -614,25 +673,36 @@ def _translate_payload(raw: RawDay) -> DaySnapshot:
             continue
         workouts.append(_workout(exercise))
 
-    # 日内序列（窗口载荷含多天 → 仅保留选中日）
+    # 日内序列（窗口载荷含多天 → 仅保留选中日；hr_min/hr_max 取原始有效采样极值）
     steps_intraday = _steps_intraday(payload, date)
-    hr_intraday = _hr_intraday(payload, date)
-    hr_values = [point.value for point in hr_intraday if point.value]
-    hr_min = min(hr_values) if hr_values else None
-    hr_max = max(hr_values) if hr_values else None
-    hr_avg = round(sum(hr_values) / len(hr_values), 1) if hr_values else None
+    hr_intraday, hr_min, hr_max, hr_avg = _hr_intraday_with_extremes(payload, date)
 
-    # 告警（None = 无数据；0 = 有数据、无告警）
+    # 告警（None = 无数据；0 = 有数据、无告警；按选中日过滤 14 天 IRN 窗口与未来 ECG）
     irn_present = "irnAlertsRaw" in payload
-    irn_points = _points(payload, "irnAlertsRaw")
+    irn_points = [
+        point
+        for point in _points(payload, "irnAlertsRaw")
+        if (alert_date := _irn_alert_date(point)) is None or alert_date == date
+    ]
     ecg_readings: list[dict] = []
+    try:
+        ecg_window_start: str | None = shift_iso(date, -(ECG_DAYS - 1))
+    except ValueError:
+        ecg_window_start = None
     for point in _points(payload, "ecgRaw"):
         record = point.get("electrocardiogram")
         if not isinstance(record, dict):
             continue
         interval = record.get("interval") if isinstance(record.get("interval"), dict) else {}
+        start_iso = _civil_iso(interval.get("startTime"), interval.get("startUtcOffset"))
+        ecg_date = (
+            _date_from_civil(interval.get("civilStartTime"))
+            or (start_iso[:10] if start_iso and len(start_iso) >= 10 else None)
+        )
+        if ecg_date and (ecg_date > date or (ecg_window_start is not None and ecg_date < ecg_window_start)):
+            continue
         reading: dict[str, Any] = {
-            "start_time": _civil_iso(interval.get("startTime"), interval.get("startUtcOffset"))
+            "start_time": start_iso
         }
         classification = _first(record.get("resultClassification"), record.get("classification"))
         if classification:

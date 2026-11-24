@@ -416,3 +416,135 @@ vm.runInContext(fs.readFileSync('health_by/web/js/ai.js', 'utf8').replace(/^impo
 """
     result = subprocess.run(['node', '-e', script], cwd=ROOT, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+
+
+
+def test_english_advice_splits_sentences_and_runs_table_uses_clean_cells():
+    script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const runScript = async (extraFile, runner) => {
+  const nodes = new Map();
+  const node = (tag = 'div') => {
+    let text = '';
+    const attrs = {};
+    const item = {tag, attributes: attrs, children: [], hidden: false, style: {}, dataset: {},
+      setAttribute(k, v) { attrs[k] = String(v); },
+      getAttribute(k) { return attrs[k]; },
+      get textContent() { return text + this.children.map(c => c.textContent).join(''); },
+      set textContent(v) { text = v; this.children = []; },
+      replaceChildren(...items) { this.children = items; },
+      appendChild(child) { this.children.push(child); },
+      addEventListener() {},
+    };
+    return item;
+  };
+  const document = {
+    getElementById(id) { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); },
+    createElement: node,
+    createTextNode(t) { const n = node('#text'); n.textContent = t; return n; },
+    querySelectorAll: () => [],
+  };
+  const sandbox = {document, URL, URLSearchParams, toast() {}, window: {},
+    get: async path => path.startsWith('/sync/runs')
+      ? {runs: [{finished_at: '2026-11-01T08:00:00Z', date: '2026-11-01', status: 'ok', succeeded: 30, total: 30}]}
+      : {ai: {enabled: false, base_url: '', model: '', has_api_key: false}, goals: {}, google_health: {}, sync_interval_minutes: 0},
+    post: async () => ({}),
+  };
+  vm.createContext(sandbox);
+  for (const file of ['i18n-messages.js', 'i18n.js', extraFile]) {
+    vm.runInContext(
+      fs.readFileSync('health_by/web/js/' + file, 'utf8')
+        .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"];\s*$/gm, '').replace(/^export \{ duration as minutes \} from .*;$/gm, 'const minutes = duration;')
+        .replace(/^export /gm, '').replace(/^initLanguage\(\);$/gm, '').replace(/\ninit\(\);\s*$/, ''),
+      sandbox
+    );
+  }
+  await runner(sandbox, nodes);
+};
+(async () => {
+  await runScript('settings.js', async (sandbox, nodes) => {
+    await sandbox.loadRuns();
+    const table = nodes.get('sync-runs').children[0];
+    const row = table.children[1].children[0];
+    assert.equal(row.children[2].textContent, '成功');
+    assert.equal(row.children[2].getAttribute('data-label'), '状态');
+    assert.equal(row.children[3].textContent, '30 / 30');
+    assert.equal(row.children[3].getAttribute('data-label'), '覆盖');
+  });
+  await runScript('ai.js', async (sandbox) => {
+    const nodesOut = sandbox.renderAdvice('1. Keep walking 8,000 steps. 2. Sleep 480 minutes.');
+    assert.equal(nodesOut.length, 1);
+    const list = nodesOut[0];
+    assert.equal(list.children.length, 2);
+    assert.equal(list.children[0].textContent, 'Keep walking 8,000 steps.');
+    assert.equal(list.children[1].textContent, 'Sleep 480 minutes.');
+  });
+})().catch(e => { console.error(e); process.exitCode = 1; });
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_clinical_safety_issue_suppresses_main_advice_and_keeps_raw_details():
+    script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const nodes = new Map();
+function node(tag = 'div') {
+  let text = '';
+  const item = {
+    tag, children: [], hidden: false,
+    get textContent() { return text + this.children.map(c => c.textContent).join(''); },
+    set textContent(v) { text = String(v); this.children = []; },
+    replaceChildren() { text = ''; this.children = []; },
+    appendChild(child) { this.children.push(child); },
+    addEventListener() {},
+  };
+  return item;
+}
+const document = {
+  getElementById(id) { if (!nodes.has(id)) nodes.set(id, node()); return nodes.get(id); },
+  createElement: node,
+  createTextNode(t) { const n = node('#text'); n.textContent = t; return n; },
+};
+const unsafeReply = {
+  model: 'test-model',
+  prompt_version: 'v3',
+  created_at: '2026-11-01T00:00:00Z',
+  content: { phenomenon: '心率 62 bpm。', causes: null, advice: '建议自行停药并加大运动量。' },
+  raw_content: '{"advice":"建议自行停药并加大运动量。"}',
+  usage: { total_tokens: 10 },
+  validation: {
+    state: 'failed',
+    issues: [{ section: 'advice', code: 'clinical_safety', reason: '包含高风险医疗指令', text: '建议自行停药' }],
+  },
+};
+const sandbox = {
+  document, URL, URLSearchParams,
+  get: async () => ({ settings: { enabled: true }, analysis: unsafeReply }),
+  post: async () => unsafeReply,
+};
+vm.createContext(sandbox);
+for (const file of ['i18n-messages.js', 'i18n.js', 'ai.js']) {
+  vm.runInContext(
+    fs.readFileSync('health_by/web/js/' + file, 'utf8')
+      .replace(/^import .*;$/gm, '')
+      .replace(/^export \{ duration as minutes \} from .*;$/gm, 'const minutes = duration;')
+      .replace(/^export /gm, ''),
+    sandbox
+  );
+}
+(async () => {
+  await sandbox.loadAI('2026-11-01');
+  const outChildren = nodes.get('ai-output').children;
+  assert.equal(outChildren[0].tag, 'p');
+  assert.match(outChildren[0].textContent, /临床安全校验|clinical safety/i);
+  assert(!outChildren[0].textContent.includes('自行停药'));
+  assert.equal(outChildren[1].tag, 'details');
+  assert.equal(outChildren[1].open, undefined);
+  assert.match(outChildren[1].children[1].textContent, /自行停药/);
+  assert.equal(nodes.get('ai-validation').hidden, false);
+  assert.match(nodes.get('ai-validation').textContent, /高风险医疗指令/);
+})().catch(e => { console.error(e); process.exitCode = 1; });
+"""
+    result = subprocess.run(["node", "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

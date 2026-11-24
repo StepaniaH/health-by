@@ -214,8 +214,8 @@ def test_window_v1_full_payload_and_path_hash_match_the_pre_change_synthetic_fix
     import hashlib
     from health_by.ai import prompt
     messages_hash = hashlib.sha256(json.dumps(prompt.build_messages(payload), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    assert messages_hash == "a813f3f2a46d88e281f6c83c407edb3021b1cc3a079a407aa82016d8c24ba631"
-    assert prompt.version_for_window("2026-10-01", "2026-10-07") == "v4-window-1"
+    assert messages_hash == "0bde040329948a45335c1f7c516ce98d609bfaf4716c0c81bd0c53b0406818d9"
+    assert prompt.version_for_window("2026-10-01", "2026-10-07") == "v4-window-2"
 
 
 def test_seven_day_label_is_supported_even_when_every_measurement_is_missing():
@@ -248,7 +248,7 @@ def test_daily_and_window_payloads_select_their_own_system_prompt():
         [{"date": "2024-02-28", "activity": {"steps": 1000}}], {}, "2024-02-26", "2024-02-28", today="2024-03-02"
     )
     assert prompt_module.build_messages(daily)[0]["content"] == prompt_module.DAILY_SYSTEM_PROMPT
-    assert prompt_module.build_messages(window)[0]["content"] == prompt_module.SYSTEM_PROMPT
+    assert prompt_module.build_messages(window)[0]["content"] == prompt_module.WINDOW_SYSTEM_PROMPT
 
 
 def test_daily_system_prompt_still_requires_naming_the_time_scope():
@@ -265,3 +265,22 @@ def test_payload_carries_no_version_leaf():
     payload = build_payload({"date": "2024-02-28"}, {}, {}, {}, today="2024-03-02")
     leaves = set(payload_audit(payload)["payload_keys"])
     assert not [key for key in leaves if key.rsplit(".", 1)[-1].endswith("_version")]
+
+
+def test_zero_sentinel_filtered_from_single_day_ai_payload():
+    """生理指标 0 占位值不得进入单日 AI 输入，也不得算出 -100% 变化。"""
+    selected = {"date": "2024-02-28", "heart": {"resting_hr": 0, "hrv_ms": 0, "spo2": 0}}
+    payload = build_payload(
+        selected,
+        {},
+        {"comparisons": {"resting_hr": {"baseline": 60}, "hrv_ms": {"baseline": 45}}},
+        {},
+        today="2024-03-02",
+    )
+    assert payload["day"]["heart"]["resting_hr_today"] is None
+    assert payload["day"]["heart"]["hrv_ms_today"] is None
+    assert payload["day"]["heart"]["spo2_today"] is None
+    rhr_cmp = payload["statistics"]["comparisons"]["resting_hr"]
+    assert rhr_cmp["current_today"] is None
+    assert rhr_cmp["difference_today"] is None
+    assert rhr_cmp["percent_change_today"] is None

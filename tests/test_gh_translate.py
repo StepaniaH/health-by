@@ -140,8 +140,8 @@ def test_full_day_translation():
     assert snapshot.profile.timezone == "Asia/Shanghai"
     assert snapshot.device.battery_level == 82
     assert snapshot.device.id == "abc"
-    assert snapshot.coverage.endpoint_count == 31
-    assert snapshot.coverage.success_count == 31
+    assert snapshot.coverage.endpoint_count == 30
+    assert snapshot.coverage.success_count == 30
     assert not snapshot.coverage.is_partial
 
 
@@ -162,8 +162,8 @@ def test_partial_payload_tolerated():
     assert snapshot.activity.steps_intraday == []
     assert snapshot.heart.resting_hr is None
     assert snapshot.heart.hr_min is None
-    assert snapshot.coverage.endpoint_count == 31  # 26 成功 + 5 失败
-    assert snapshot.coverage.success_count == 26
+    assert snapshot.coverage.endpoint_count == 30  # 25 成功 + 5 失败
+    assert snapshot.coverage.success_count == 25
     assert snapshot.coverage.is_partial
 
 
@@ -366,8 +366,8 @@ def test_errors_and_stats_flow_into_coverage():
     errors = [{"key": "ecgRaw", "message": "403", "status": 403}]
     snapshot = translate_payload(raw_day(DAY, payload, errors=errors))
     assert snapshot.coverage.errors == errors
-    assert snapshot.coverage.endpoint_count == 31
-    assert snapshot.coverage.success_count == 30
+    assert snapshot.coverage.endpoint_count == 30
+    assert snapshot.coverage.success_count == 29
 
 
 def test_intraday_series_filtered_to_target_day():
@@ -591,3 +591,69 @@ def test_intraday_uses_single_dominant_source():
     }
     snapshot = translate_payload(raw_day(DAY, payload))
     assert [(p.time, p.value) for p in snapshot.activity.steps_intraday] == [("09:00", 100.0)]
+
+
+def test_hr_extremes_preserve_raw_samples_and_irn_ecg_filter_by_date():
+    """同一分钟内 60 与 120 bpm：分时按分钟均值为 90，但 hr_min/hr_max 保留原始极值 60/120；IRN/ECG 按日历过滤。"""
+    payload = base_payload()
+    payload["heartIntradayRaw"] = {
+        "dataPoints": [
+            {
+                "heartRate": {
+                    "sampleTime": {"civilTime": civil(DAY, 9, 15), "physicalTime": f"{DAY}T01:15:10Z", "utcOffset": "28800s"},
+                    "beatsPerMinute": 60,
+                }
+            },
+            {
+                "heartRate": {
+                    "sampleTime": {"civilTime": civil(DAY, 9, 15), "physicalTime": f"{DAY}T01:15:40Z", "utcOffset": "28800s"},
+                    "beatsPerMinute": 120,
+                }
+            },
+        ]
+    }
+    payload["irnAlertsRaw"] = {
+        "dataPoints": [
+            {
+                "irregularRhythmNotification": {
+                    "alertTime": {"civilTime": civil("2026-10-05", 8, 0), "physicalTime": "2026-10-05T00:00:00Z"}
+                }
+            },
+            {
+                "irregularRhythmNotification": {
+                    "alertTime": {"civilTime": civil(DAY, 10, 0), "physicalTime": f"{DAY}T02:00:00Z"}
+                }
+            },
+        ]
+    }
+    payload["ecgRaw"] = {
+        "dataPoints": [
+            {
+                "electrocardiogram": {
+                    "interval": {"startTime": f"{DAY}T03:00:00Z"},
+                    "classification": "SINUS_RHYTHM",
+                    "averageHeartRateBpm": 68,
+                }
+            },
+            {
+                "electrocardiogram": {
+                    "interval": {"startTime": "2026-10-20T03:00:00Z"},
+                    "classification": "ATRIAL_FIBRILLATION",
+                    "averageHeartRateBpm": 115,
+                }
+            },
+        ]
+    }
+    snapshot = translate_payload(raw_day(DAY, payload))
+    assert [(p.time, p.value) for p in snapshot.heart.hr_intraday] == [("09:15", 90.0)]
+    assert snapshot.heart.hr_min == 60.0
+    assert snapshot.heart.hr_max == 120.0
+    assert snapshot.heart.hr_avg == 90.0
+    assert snapshot.alerts.irregular_rhythm_alerts == 1
+    assert len(snapshot.alerts.ecg_readings) == 1
+    assert snapshot.alerts.ecg_readings[0]["start_time"].startswith(f"{DAY}T03:00:00")
+
+    # 若只有 10 天前的 IRN 告警，不归到当天
+    payload["irnAlertsRaw"]["dataPoints"].pop()
+    snapshot_old_only = translate_payload(raw_day(DAY, payload))
+    assert snapshot_old_only.alerts.irregular_rhythm_alerts == 0

@@ -6,6 +6,7 @@
   <title data-i18n="web.index.text.f7ba58c59">Health By · 健康日报</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/app.css">
+  <script type="module" src="/static/js/theme.js"></script>
 </head>
 <body>
   <div id="load-bar" class="load-bar" role="status" aria-label="正在加载当天数据" hidden data-i18n-aria-label="web.index.aria-label.74f2d9fde"></div>
@@ -13,9 +14,21 @@
     <div class="masthead-row">
       <div class="brand"><a href="/">Health By</a></div>
       <div class="masthead-actions">
-        <label class="language-picker"><span data-i18n="language.label">Language</span>
-          <select data-language-select aria-label="Language"><option value="zh">中文</option><option value="en">English</option></select>
-        </label>
+        <div class="masthead-prefs">
+          <div class="select-chip theme-picker"><span class="sr-only" data-i18n="theme.label">外观</span>
+            <svg class="select-chip-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"></circle><path d="M8 2.5a5.5 5.5 0 0 0 0 11Z" fill="currentColor" stroke="none"></path></svg>
+            <select data-theme-select aria-label="外观" data-i18n-aria-label="theme.label">
+              <option value="auto" data-i18n="theme.auto">跟随系统</option>
+              <option value="light" data-i18n="theme.light">浅色</option>
+              <option value="dark" data-i18n="theme.dark">深色</option>
+            </select>
+          </div>
+          <div class="select-chip language-picker"><span class="sr-only" data-i18n="language.label">语言</span>
+            <svg class="select-chip-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"></circle><path d="M2.5 8h11M8 2.25c1.6 1.65 2.4 3.55 2.4 5.75S9.6 12.1 8 13.75C6.4 12.1 5.6 10.2 5.6 8S6.4 3.9 8 2.25Z"></path></svg>
+            <select data-language-select aria-label="语言" data-i18n-aria-label="language.label"><option value="zh">中文</option><option value="en">English</option></select>
+          </div>
+        </div>
+        <span class="masthead-sep" aria-hidden="true"></span>
         <span id="sync-note" class="meta-note" aria-live="polite"></span>
         <button id="sync-btn" class="btn btn-primary btn-sm"><span data-i18n="web.index.text.dcfe516d1">同步</span></button>
         <button id="batch-btn" class="link-btn"><span data-i18n="web.index.text.cb7707463">批量</span></button>
@@ -27,9 +40,11 @@
       <h1 id="date-label" class="date-title"><span data-i18n="web.index.text.4927a53bc">加载中…</span></h1>
       <button id="date-next" class="arrow" aria-label="后一天" data-i18n-aria-label="web.index.aria-label.af19ac0d4">→</button>
       <div class="date-tools">
-        <label class="link-btn pick" title="选择日期" data-i18n-title="web.index.title.680c78ec6"><span data-i18n="web.index.text.680c78ec6">选择日期</span>
-          <input type="date" id="date-picker" aria-label="选择日期" data-i18n-aria-label="web.index.aria-label.680c78ec6">
-        </label>
+        <button type="button" id="date-pick-btn" class="link-btn pick-btn" title="选择日期" data-i18n-title="web.index.title.680c78ec6" aria-haspopup="dialog" aria-expanded="false">
+          <svg class="inline-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.25" y="3.25" width="11.5" height="10.5" rx="1.75"></rect><path d="M5.25 1.75v2.5M10.75 1.75v2.5M2.25 6.75h11.5"></path></svg>
+          <span data-i18n="web.index.text.680c78ec6">选择日期</span>
+        </button>
+        <input type="hidden" id="date-picker">
         <button id="date-today" class="link-btn"><span data-i18n="web.index.text.c4aa445b5">回到今天</span></button>
       </div>
     </div>
@@ -47,8 +62,11 @@
   </nav>
 
   <main class="page">
-    <p id="today-summary" class="today-summary"></p>
-    <p id="today-criteria" class="today-criteria"></p>
+    <p id="today-summary" class="today-summary" hidden></p>
+    <details id="today-criteria-details" class="today-criteria-details" hidden>
+      <summary><span data-i18n="web.index.text.criteria_toggle">统计口径</span></summary>
+      <p id="today-criteria" class="today-criteria"></p>
+    </details>
 
     <section id="card-today" class="block" hidden>
       <div class="block-head">
@@ -63,25 +81,39 @@
         <span class="block-index">02</span>
         <h2><span data-i18n="web.index.text.0e18125db">AI 解读</span></h2>
       </div>
-      <div class="ai-window-controls">
-        <label><span data-i18n="web.index.text.762301e01">分析窗口</span>
-          <select id="ai-window-preset">
-            <option value="1" data-i18n="web.index.text.80be27ffe">所选单日</option><option value="7" data-i18n="web.index.text.2261b0671">近 7 天</option>
-            <option value="30" data-i18n="web.index.text.f729bb3d3">近 30 天</option><option value="90" data-i18n="web.index.text.0909522d9">近 90 天</option>
-            <option value="custom" data-i18n="web.index.text.3cfb56c76">自定义区间</option>
-          </select>
-        </label>
-        <label><span data-i18n="web.index.text.760506491">开始日期</span><input id="ai-window-start" type="date"></label>
-        <label><span data-i18n="web.index.text.895cd52fb">结束日期</span><input id="ai-window-end" type="date"></label>
-        <button id="ai-window-apply" class="btn"><span data-i18n="web.index.text.ba33d3ceb">应用区间</span></button>
+      <div class="ai-bar">
+        <div class="seg-control" role="group" aria-label="分析窗口" data-i18n-aria-label="web.index.text.762301e01">
+          <button type="button" class="seg-btn is-active" data-ai-preset="1" aria-pressed="true"><span data-i18n="web.index.text.80be27ffe">所选单日</span></button>
+          <button type="button" class="seg-btn" data-ai-preset="7" aria-pressed="false"><span data-i18n="web.index.text.2261b0671">近 7 天</span></button>
+          <button type="button" class="seg-btn" data-ai-preset="30" aria-pressed="false"><span data-i18n="web.index.text.f729bb3d3">近 30 天</span></button>
+          <button type="button" class="seg-btn" data-ai-preset="90" aria-pressed="false"><span data-i18n="web.index.text.0909522d9">近 90 天</span></button>
+          <button type="button" class="seg-btn" data-ai-preset="custom" aria-pressed="false"><span data-i18n="web.index.text.3cfb56c76">自定义</span></button>
+        </div>
+        <select id="ai-window-preset" class="sr-only" tabindex="-1" aria-hidden="true">
+          <option value="1" data-i18n="web.index.text.80be27ffe">所选单日</option>
+          <option value="7" data-i18n="web.index.text.2261b0671">近 7 天</option>
+          <option value="30" data-i18n="web.index.text.f729bb3d3">近 30 天</option>
+          <option value="90" data-i18n="web.index.text.0909522d9">近 90 天</option>
+          <option value="custom" data-i18n="web.index.text.3cfb56c76">自定义</option>
+        </select>
+        <div class="ai-bar-actions">
+          <button id="ai-generate" class="btn btn-primary" disabled><span data-i18n="web.index.text.b932e2eca">生成解读</span></button>
+          <a class="link-btn" href="/settings#ai-settings"><span data-i18n="web.index.text.e3ce49ba8">AI 设置</span></a>
+        </div>
       </div>
-      <p id="ai-window-note" class="muted small" role="status"></p>
-      <div class="ai-toolbar">
-        <button id="ai-generate" class="btn btn-primary" disabled><span data-i18n="web.index.text.b932e2eca">生成解读</span></button>
-        <a class="link-btn" href="/settings#ai-settings"><span data-i18n="web.index.text.e3ce49ba8">AI 设置</span></a>
+      <div id="ai-custom-range" class="ai-custom-range" hidden>
+        <div class="date-range-group">
+          <input id="ai-window-start" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" autocomplete="off" data-date-input aria-label="开始日期" data-i18n-aria-label="web.index.text.760506491">
+          <span class="date-range-sep" aria-hidden="true">→</span>
+          <input id="ai-window-end" type="text" inputmode="numeric" placeholder="YYYY-MM-DD" autocomplete="off" data-date-input aria-label="结束日期" data-i18n-aria-label="web.index.text.895cd52fb">
+        </div>
+        <button id="ai-window-apply" class="btn btn-sm"><span data-i18n="web.index.text.ba33d3ceb">应用</span></button>
       </div>
-      <p id="ai-boundary" class="muted small"></p>
-      <p id="ai-status" class="muted small" role="status" aria-live="polite"></p>
+      <div class="ai-subbar">
+        <p id="ai-window-note" class="ai-range-tag num" role="status"></p>
+        <p id="ai-status" class="muted small" role="status" aria-live="polite"></p>
+      </div>
+      <p id="ai-boundary" class="ai-boundary muted small" hidden></p>
       <p id="ai-error" class="ai-error" role="alert" hidden></p>
       <div id="ai-validation" class="ai-validation" role="status" hidden></div>
       <div id="ai-output" class="ai-output" aria-live="polite"></div>
@@ -280,22 +312,22 @@
     </section>
 
     <footer class="colophon">
-      <span id="colophon-left">Health By</span>
+      <span id="colophon-left">Health By · <span data-i18n="web.common.non_medical_disclaimer">仅供参考，非医疗建议</span></span>
       <span class="colophon-note"><span data-i18n="web.index.text.eda055a5e">本地存档计算 · 分析窗口</span> <span id="colophon-window">90</span> <span data-i18n="web.index.text.49da61cee">天</span></span>
     </footer>
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-  <dialog id="batch-dialog" class="batch-dialog">
+  <dialog id="batch-dialog" class="batch-dialog" aria-labelledby="batch-dialog-title">
     <form id="batch-form">
-      <h3><span data-i18n="web.index.text.6f957b4d8">批量同步</span></h3>
-      <label><span data-i18n="web.index.text.760506491">开始日期</span><input type="date" id="batch-start" required></label>
-      <label><span data-i18n="web.index.text.895cd52fb">结束日期</span><input type="date" id="batch-end" required></label>
-      <p class="muted" id="batch-hint"><span data-i18n="web.index.text.61fc8688b">一次最多 90 天，按队列并发执行。</span></p>
+      <h3 id="batch-dialog-title"><span data-i18n="web.index.text.6f957b4d8">批量同步</span></h3>
+      <label><span data-i18n="web.index.text.760506491">开始日期</span><input type="text" inputmode="numeric" placeholder="YYYY-MM-DD" autocomplete="off" data-date-input id="batch-start" required></label>
+      <label><span data-i18n="web.index.text.895cd52fb">结束日期</span><input type="text" inputmode="numeric" placeholder="YYYY-MM-DD" autocomplete="off" data-date-input id="batch-end" required></label>
+      <p class="muted" id="batch-hint"><span data-i18n="web.index.text.61fc8688b">单次最多 90 天。</span></p>
       <div class="dialog-actions">
         <button type="button" class="btn" id="batch-cancel"><span data-i18n="web.index.text.2cd0f3be8">取消</span></button>
-        <button type="submit" class="btn"><span data-i18n="web.index.text.8dabf1df8">开始同步</span></button>
+        <button type="submit" class="btn btn-primary"><span data-i18n="web.index.text.8dabf1df8">开始同步</span></button>
       </div>
     </form>
   </dialog>

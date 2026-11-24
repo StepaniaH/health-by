@@ -48,14 +48,17 @@ def test_empty_input_is_graceful():
 
 
 def test_correlation_detects_relationship_and_ranks():
+    import math
+
     days = []
     for index in range(30):
+        wave = math.sin(2 * math.pi * 7 * index / 30)
         days.append(
             make_day(
                 _date(index),
-                sleep_minutes=360 + index * 4,  # 递增
-                resting_hr=72 - index,  # 递减 → 强负相关
-                hrv=40 + index * 0.8,
+                sleep_minutes=round(420 + wave * 60),
+                resting_hr=round(64 - wave * 8),
+                hrv=round(50 + wave * 8 + math.cos(2 * math.pi * 7 * index / 30) * 6, 1),
             )
         )
     payload = build_insights(days, {})
@@ -77,11 +80,14 @@ def test_correlation_requires_minimum_samples():
 
 
 def test_shifted_pair_uses_next_day():
-    days = [make_day(_date(index), steps=5000 + index * 120) for index in range(14)]
-    # 次日睡眠越来越长：步数（x）↔ 次日睡眠（y）
+    import math
+
+    steps_seq = [round(7500 + 2500 * math.sin(2 * math.pi * 4 * index / 14)) for index in range(14)]
+    days = [make_day(_date(index), steps=steps_seq[index]) for index in range(14)]
+    # 次日睡眠随前一天步数同向波动（非单调高自相关伪斜坡）：步数（x）↔ 次日睡眠（y）
     for index in range(13):
         days[index + 1]["sleep"] = {
-            "total_minutes": 380 + index * 4,
+            "total_minutes": round(420 + (steps_seq[index] - 7500) * 0.025),
             "efficiency": None,
             "stages": {},
             "start_time": None,
@@ -304,8 +310,14 @@ def test_correlation_pairs_include_the_ones_that_failed_correction():
 
 def test_correlation_pairs_never_leak_a_conclusion():
     """候选集只给识别信息 + r + n + 画线用的 slope；解读原料（ci / strength）仍只在 `correlations` 里。"""
+    import math
+
     days = [
-        make_day(_date(i), sleep_minutes=360 + i * 4, resting_hr=72 - i)
+        make_day(
+            _date(i),
+            sleep_minutes=round(420 + 60 * math.sin(2 * math.pi * 7 * i / 30)),
+            resting_hr=round(64 - 8 * math.sin(2 * math.pi * 7 * i / 30)),
+        )
         for i in range(30)
     ]
     payload = build_insights(days, {})
@@ -347,14 +359,17 @@ def test_candidates_carry_slope_only_when_the_line_may_be_drawn():
     把"能不能画线"写进数据形状（未通过的 slope 为 None），而不是靠前端再判一次
     `survives_correction`——约定会漏，形状不会。
     """
+    import math
+
     days = []
-    for index in range(60):
+    for index in range(30):
+        wave = math.sin(2 * math.pi * 7 * index / 30)
         days.append(
             make_day(
                 _date(index),
-                sleep_minutes=360 + index * 2,
-                resting_hr=80 - index * 0.5,
-                hrv=40 + index * 0.3,
+                sleep_minutes=round(420 + wave * 60),
+                resting_hr=round(64 - wave * 8),
+                hrv=round(50 + math.cos(2 * math.pi * index / 10) * 6, 1),
             )
         )
     payload = build_insights(days, {})
@@ -367,3 +382,145 @@ def test_candidates_carry_slope_only_when_the_line_may_be_drawn():
         # 解读句的原料仍不下发
         assert "strength" not in pair
         assert "ci_low" not in pair
+
+
+def test_lagged_correlation_requires_calendar_adjacent_days_and_ranks_tighter_ci():
+    from health_by.util import shift_iso
+
+    spaced = [
+        make_day(
+            shift_iso("2026-06-01", index * 3),
+            steps=4000 + index * 300,
+            sleep_minutes=360 + index * 10,
+        )
+        for index in range(15)
+    ]
+    payload = build_insights(spaced, {})
+    assert not any(c["offset_days"] == 1 for c in payload["correlations"])
+    assert not any(c["offset_days"] == 1 for c in payload["correlations_candidates"])
+
+    # Construct orthogonal unit signals of length 25 so:
+    # - sleep vs hrv has r = +0.75 (95% CI ~ [0.504, 0.883], closer bound 0.504)
+    # - sleep vs resting_hr has r = -0.60 (95% CI ~ [-0.804, -0.269], closer bound 0.269)
+    # Both survive Bonferroni at n=25, and +0.75 must outrank -0.60.
+    import math
+    from health_by.insights import _correlations
+
+    u1 = [math.sin(2 * math.pi * 6 * i / 25) for i in range(25)]
+    u2 = [math.cos(2 * math.pi * 6 * i / 25) for i in range(25)]
+    series = [
+        {
+            "date": shift_iso("2026-06-01", i),
+            "sleep_minutes": 420.0 + 30.0 * u1[i],
+            "hrv_ms": 50.0 + 10.0 * (0.75 * u1[i] + math.sqrt(1 - 0.75**2) * u2[i]),
+            "resting_hr": 62.0 + 6.0 * (-0.60 * u1[i] + math.sqrt(1 - 0.60**2) * u2[i]),
+        }
+        for i in range(25)
+    ]
+    kept, _, _, _ = _correlations(series)
+    sleep_pairs = [c for c in kept if c["x"] == "sleep_minutes"]
+    assert len(sleep_pairs) == 2
+    assert sleep_pairs[0]["y"] == "hrv_ms"
+    assert sleep_pairs[1]["y"] == "resting_hr"
+    assert abs(sleep_pairs[0]["ci_low"]) < abs(sleep_pairs[1]["ci_low"])
+    assert min(abs(sleep_pairs[0]["ci_low"]), abs(sleep_pairs[0]["ci_high"])) > min(
+        abs(sleep_pairs[1]["ci_low"]), abs(sleep_pairs[1]["ci_high"])
+    )
+
+
+def test_series_sleep_timing_handles_afternoon_wakes_without_wrap():
+    days = [
+        make_day(
+            "2026-06-01",
+            sleep_minutes=570,
+            bed="2026-06-01T03:00:00+08:00",
+            wake="2026-06-01T12:30:00+08:00",
+        )
+    ]
+    payload = build_insights(days, {})
+    timing_row = payload["timing"][0]
+    assert timing_row["bed"] == 27.0
+    assert timing_row["wake"] == 36.5
+    assert payload["series"][0]["sleep_mid"] == 31.75
+
+
+
+def test_build_insights_history_days_preserves_window_while_buffering_bands():
+    from datetime import timedelta
+
+    start = date_type(2026, 9, 1)
+    days = []
+    for i in range(40):
+        d = (start + timedelta(days=i)).isoformat()
+        days.append(make_day(d, steps=5000 + (i % 5) * 200, hrv=42.0 + (i % 4), rhr=60.0 + (i % 3)))
+    result = build_insights(days[-14:], {}, window_days=14, history_days=days)
+    assert result["window_days"] == 14
+    assert len(result["series"]) == 14
+    # bands 借助 history_days 预热滚动带，外带统计仍对齐显示窗口 14 天
+    assert result["bands_outside"]["hrv_ms"]["points"] == 14
+
+
+def test_sync_endpoint_rejects_oversized_range_without_expanding_dates(tmp_cfg):
+    from fastapi.testclient import TestClient
+    from health_by.api.app import create_app
+
+    app = create_app(tmp_cfg)
+    try:
+        client = TestClient(app)
+        resp = client.post("/api/v1/sync", json={"start": "1900-01-01", "end": "2026-11-01"})
+        assert resp.status_code == 400
+    finally:
+        app.state.engine.shutdown()
+        app.state.engine.close()
+        app.state.conn.close()
+
+
+def test_near_goal_ratio_sparse_achievements_window_and_unrounded_corr_cutoff():
+    import math
+    from health_by import metrics
+    from health_by.insights import CORRELATION_ALPHA, CORRELATION_PAIRS, _correlations
+    from health_by.util import shift_iso
+
+    # 1. 7999/8000 不得进位为 1.000 或误判达标
+    near = build_insights([make_day("2026-06-01", steps=7999)], {"steps": 8000}, end_date="2026-06-01")
+    assert near["series"][0]["steps_ratio"] == 0.999
+    assert near["achievements_summary"]["steps_ratio"]["achieved"] == 0
+
+    # 2. 稀疏 2 条跨月记录：近 28 个日历日只统计窗口内的那 1 条
+    sparse = build_insights(
+        [make_day("2026-01-01", steps=9000), make_day("2026-06-01", steps=9000)],
+        {"steps": 8000},
+        end_date="2026-06-01",
+        window_days=180,
+    )
+    summary = sparse["achievements_summary"]["steps_ratio"]
+    assert summary["total"] == 1
+    assert summary["observed"] == 1
+    assert summary["missing_days"] == 27
+    assert summary["achieved"] == 1
+
+    # 3. 相关显著性必须在未舍入 raw_r 上判定（n=15 临界处 raw_r < r_crit < round(raw_r, 3)）
+    n = 15
+    alpha = CORRELATION_ALPHA / len(CORRELATION_PAIRS)
+    z_crit = metrics.normal_quantile(1 - alpha / 2)
+    r_crit = math.tanh(z_crit / math.sqrt(n - 3))
+    target_r = r_crit - 1e-5
+    assert round(target_r, 3) > r_crit
+    assert metrics.correlation_is_significant(target_r, n, alpha=alpha) is False
+    assert metrics.correlation_is_significant(round(target_r, 3), n, alpha=alpha) is True
+
+    u1 = [math.sin(2 * math.pi * i / n) for i in range(n)]
+    u2 = [math.cos(2 * math.pi * i / n) for i in range(n)]
+    series = [
+        {
+            "date": shift_iso("2026-06-01", i * 2),  # 隔天分布，lag-1 自相关为 0 -> n_eff == n
+            "sleep_minutes": 420.0 + 30.0 * u1[i],
+            "hrv_ms": 50.0 + 10.0 * (target_r * u1[i] + math.sqrt(1 - target_r**2) * u2[i]),
+        }
+        for i in range(n)
+    ]
+    kept, _, _, candidates = _correlations(series)
+    assert not any(c["x"] == "sleep_minutes" and c["y"] == "hrv_ms" for c in kept)
+    pair = next(c for c in candidates if c["x"] == "sleep_minutes" and c["y"] == "hrv_ms")
+    assert pair["r"] == round(target_r, 3)
+    assert pair["survives_correction"] is False

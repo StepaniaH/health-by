@@ -752,3 +752,149 @@ def test_daily_both_actual_requests_use_the_same_dual_payload_and_schema(ai_app,
     assert [row["payload_schema_version"] for row in rows] == ["daily-v2", "daily-v2"]
     assert rows[0]["payload_keys_hash"] == rows[1]["payload_keys_hash"]
     assert rows[0]["payload_hash"] == rows[1]["payload_hash"]
+
+
+def test_changing_ai_base_url_origin_clears_stored_api_key_unless_provided(ai_app, api):
+    configure(api)
+    same_host = api.post(
+        "/api/v1/settings/ai",
+        json={"ai_base_url": "https://model.example/v1/chat/completions"},
+    )
+    assert same_host.status_code == 200
+    assert same_host.json()["has_api_key"] is True
+
+    different_host = api.post(
+        "/api/v1/settings/ai",
+        json={"ai_base_url": "https://other.example/v1"},
+    )
+    assert different_host.status_code == 200
+    assert different_host.json()["has_api_key"] is False
+    assert storage.load_credentials_raw(ai_app.state.conn, "ai") is None
+
+    rebound = api.post(
+        "/api/v1/settings/ai",
+        json={"ai_base_url": "https://third.example/v1", "api_key": "new-key"},
+    )
+    assert rebound.status_code == 200
+    assert rebound.json()["has_api_key"] is True
+    raw = storage.load_credentials_raw(ai_app.state.conn, "ai")
+    assert ai_app.state.ai.secrets.decrypt_json(raw) == {"api_key": "new-key"}
+
+
+@pytest.mark.parametrize("url", [
+    "http://169.254.169.254/latest/meta-data",
+    "http://0.0.0.0:8080/v1",
+    "http://[::ffff:169.254.169.254]/v1",
+    "http://metadata.google.internal/v1",
+    "http://remote.example/v1",
+])
+def test_ssrf_and_insecure_http_with_key_are_rejected(ai_app, api, url):
+    before = storage.load_settings(ai_app.state.conn)
+    resp = api.post("/api/v1/settings/ai", json={"ai_base_url": url, "api_key": KEY})
+    assert resp.status_code == 400
+    assert storage.load_settings(ai_app.state.conn) == before
+
+
+def test_dns_rebinding_resolution_to_metadata_ip_is_blocked(monkeypatch):
+    from health_by.ai.client import AIError, _verify_resolved_addresses
+
+    monkeypatch.setattr(
+        "health_by.ai.client.socket.getaddrinfo",
+        lambda host, port, type=0: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))],
+    )
+    with pytest.raises(AIError):
+        _verify_resolved_addresses("https://evil-rebind.example/v1/chat/completions")
+
+
+def test_oversized_ai_response_is_rejected(ai_app, api, monkeypatch):
+    from health_by.ai.client import MAX_RESPONSE_BYTES
+
+    configure(api)
+    ai_app.state.engine.sync_day(iso_today())
+    huge = b"x" * (MAX_RESPONSE_BYTES + 1024)
+    mock_model(monkeypatch, lambda request: httpx.Response(200, content=huge))
+
+    probe = api.post("/api/v1/ai/test").json()
+    assert probe["ok"] is False
+    assert probe["status"] == "response_too_large"
+
+    analyze = api.post("/api/v1/ai/analyze", json={"date": iso_today()})
+    assert analyze.status_code == 502
+
+
+
+def test_truncation_retry_uses_truncation_repair_note_and_sets_code(ai_app, api, monkeypatch):
+    configure(api)
+    ai_app.state.engine.sync_days([iso_today()])
+    seen_messages = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen_messages.append(body["messages"])
+        if len(seen_messages) == 1:
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": '{"phenomenon": "截断测试'}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 2000, "total_tokens": 2010},
+            })
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps({"phenomenon": "步数有记录。", "causes": "看不出。", "advice": "本轮没有可执行的建议。"}, ensure_ascii=False)}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 40, "total_tokens": 60},
+        })
+
+    mock_model(monkeypatch, handler)
+    resp = api.post("/api/v1/ai/analyze", json={"date": iso_today()})
+    assert resp.status_code == 200, resp.text
+    assert len(seen_messages) == 2
+    assert prompt.TRUNCATION_REPAIR_NOTE in seen_messages[1][-1]["content"]
+
+    # 两轮均截断时 validation issue 带 code == "truncated"
+    def always_truncated(request):
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": '{"phenomenon": "截断'}, "finish_reason": "length"}],
+        })
+
+    mock_model(monkeypatch, always_truncated)
+    resp2 = api.post("/api/v1/ai/analyze", json={"date": iso_today(), "force": True})
+    assert resp2.status_code == 200
+    assert resp2.json()["validation"]["issues"][0]["code"] == "truncated"
+
+
+def test_gzip_encoded_ai_responses_succeed_across_all_endpoints(ai_app, api, monkeypatch):
+    """上游返回 Content-Encoding: gzip 时，缓冲读取不得触发二次解压报错。"""
+    import gzip
+
+    configure(api)
+    snapshot = ai_app.state.engine.sync_day(iso_today())
+
+    def gzip_response(payload: dict) -> httpx.Response:
+        raw = gzip.compress(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        return httpx.Response(
+            200,
+            content=raw,
+            headers={"Content-Encoding": "gzip", "Content-Type": "application/json"},
+        )
+
+    def handler(request):
+        if request.url.path.endswith("/models"):
+            return gzip_response({"data": [{"id": "gzip-model", "name": "Gzip Model"}]})
+        body = json.loads(request.content)
+        if body.get("max_tokens") == 256:
+            return gzip_response({"choices": [{"finish_reason": "stop", "message": {"content": "OK"}}]})
+        content = json.dumps(
+            {"phenomenon": f"当天步数 {snapshot.activity.steps} 步。", "causes": None, "advice": None},
+            ensure_ascii=False,
+        )
+        return gzip_response({"choices": [{"finish_reason": "stop", "message": {"content": content}}]})
+
+    mock_model(monkeypatch, handler)
+
+    models_resp = api.post("/api/v1/ai/models").json()
+    assert models_resp["ok"] is True
+    assert models_resp["models"] == [{"id": "gzip-model", "name": "Gzip Model"}]
+
+    probe_resp = api.post("/api/v1/ai/test").json()
+    assert probe_resp["ok"] is True
+
+    analyze_resp = api.post("/api/v1/ai/analyze", json={"date": iso_today()})
+    assert analyze_resp.status_code == 200, analyze_resp.text
+    assert str(snapshot.activity.steps) in analyze_resp.json()["content"]["phenomenon"]

@@ -13,7 +13,7 @@ from string import Formatter
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_i18n_js import scan as js_scan  # noqa: E402  (本地脚本，无第三方依赖)
+from check_i18n_js import extract_keys as js_keys, scan as js_scan  # noqa: E402  (本地脚本，无第三方依赖)
 HAN = re.compile(r"[\u3400-\u9fff]")
 # Explicit non-UI language resources. No file-wide business-module exemptions.
 EXEMPTIONS = {
@@ -94,7 +94,7 @@ def collect(root=ROOT):
         source = path.read_text() if path.suffix in ('.py','.js','.html') else ''
         if path.suffix == '.py': record(file, *python_issues(source,file))
         elif path.suffix == '.js':
-            record(file, js_scan(source), [])
+            record(file, js_scan(source), js_keys(source))
         elif path.suffix == '.html':
             check = MarkupCheck(); check.feed(source); record(file, check.issues, check.keys)
     catalogs = {lang: json.loads((root/'health_by/locales'/f'{lang}.json').read_text()) for lang in ('zh','en')}

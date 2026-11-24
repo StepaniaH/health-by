@@ -32,7 +32,7 @@ def test_sync_synthetic_day_stores_everything(engine, conn):
     assert storage.get_day(conn, DAY) is not None
     runs = storage.list_sync_runs(conn)
     assert runs[0]["status"] == "ok"
-    assert runs[0]["total"] == 31
+    assert runs[0]["total"] == 30
 
 
 def test_sync_days_continues_after_single_failure(engine, conn, monkeypatch):
@@ -591,3 +591,476 @@ def test_drift_detection_skips_rows_without_baseline(conn, tmp_cfg):
     finally:
         engine.shutdown()
         engine.close()
+
+
+def test_parse_issues_are_recorded_as_warning_list_not_string(engine, conn, monkeypatch):
+    base = SyntheticProvider()
+
+    class WithParseIssue(SyntheticProvider):
+        def translate(self, raw):
+            snapshot = base.translate(raw)
+            raw.parse_issues.append({"key": "stepsDaily", "helper": "_float", "value": "8,123"})
+            return snapshot
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", WithParseIssue())
+
+    results = engine.sync_days([DAY])
+    warnings = results[0]["warnings"]
+    assert isinstance(warnings, list) and len(warnings) == 1
+    assert warnings[0]["kind"] == "parse_issue"
+
+    run = storage.list_sync_runs(conn, limit=1)[0]
+    assert isinstance(run["warnings"], list) and len(run["warnings"]) == 1
+    assert run["warnings"][0]["kind"] == "parse_issue"
+
+
+def test_clear_all_prevents_inflight_worker_writeback(engine, conn, monkeypatch):
+    """在途后台同步抓数期间触发 clear_all 后，返回的结果不得写回数据库。"""
+    base = SyntheticProvider()
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingSynthetic(SyntheticProvider):
+        def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
+            entered.set()
+            release.wait(timeout=10)
+            return base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", BlockingSynthetic())
+
+    engine.start_background([DAY])
+    assert entered.wait(timeout=5)
+    engine.clear_all(conn)
+    release.set()
+
+    deadline = time.monotonic() + 10
+    while engine.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not engine.is_running()
+    assert storage.count_days(conn) == 0
+    assert storage.list_sync_runs(conn) == []
+
+
+def test_intraday_hr_only_day_is_stored_not_dropped_as_empty(engine, conn, monkeypatch):
+    """只有分时心率/极值的日期必须落库，不能误判为 empty 丢弃。"""
+    from health_by.models import ActivityDay, BodyDay, HealthAlerts, HeartDay, TimePoint
+
+    class IntradayOnly(SyntheticProvider):
+        def translate(self, raw):
+            return DaySnapshot(
+                date=raw.date,
+                source=raw.source,
+                generated_at=raw.generated_at,
+                activity=ActivityDay(),
+                heart=HeartDay(hr_min=65.0, hr_max=82.0, hr_avg=71.0, hr_intraday=[TimePoint("09:00", 71.0)]),
+                body=BodyDay(),
+                alerts=HealthAlerts(),
+            )
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", IntradayOnly())
+
+    results = engine.sync_days([DAY])
+    assert results[0]["status"] == "ok"
+    saved = storage.get_day(conn, DAY)
+    assert saved is not None
+    assert saved["heart"]["hr_avg"] == 71.0
+    assert len(saved["heart"]["hr_intraday"]) == 1
+    assert conn.execute("SELECT COUNT(*) FROM raw_days WHERE date = ?", (DAY,)).fetchone()[0] == 1
+
+
+def test_single_worker_queue_dedupes_already_queued_date(engine, conn, monkeypatch):
+    """单工作线程模式下，正在队列中等待的日期 B 不得被重复排队。"""
+    base = SyntheticProvider()
+    day_a = shift_iso(DAY, -1)
+    day_b = DAY
+    entered_a = threading.Event()
+    release_a = threading.Event()
+    fetched: list[str] = []
+
+    class ControlledSynthetic(SyntheticProvider):
+        def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
+            fetched.append(date)
+            if date == day_a:
+                entered_a.set()
+                release_a.wait(timeout=10)
+            return base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", ControlledSynthetic())
+
+    engine.start_background([day_a])
+    assert entered_a.wait(timeout=5)
+    first = engine.start_background([day_b])
+    second = engine.start_background([day_b])
+    assert first["added"] == 1
+    assert second["added"] == 0
+    release_a.set()
+
+    deadline = time.monotonic() + 10
+    while engine.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert fetched == [day_a, day_b]
+
+
+def test_autosync_retries_failed_middle_day_and_honors_empty_interval(engine, conn):
+    """中间某天失败即使新一天成功也应重试；连续 empty 日必须受同步间隔节流。"""
+    storage.set_setting(conn, "sync_interval_minutes", 60)
+    today = iso_today()
+    d_old = shift_iso(today, -3)
+    d_failed = shift_iso(today, -2)
+    d_newer = shift_iso(today, -1)
+
+    engine.sync_day(d_old)
+    _seed_old_sync(conn, d_failed, status="error", when="2020-01-01T00:00:00+00:00")
+    engine.sync_day(d_newer)
+    conn.execute("UPDATE sync_runs SET finished_at = ?", ("2000-01-01T00:00:00+00:00",))
+    conn.commit()
+
+    dates, _ = engine._autosync_dates()
+    assert d_failed in dates
+
+    # 若刚刚完成过一次 empty 同步，auto_sync_tick 必须尊重 sync_interval_minutes 不空转
+    from health_by.util import utc_now_iso
+
+    _seed_old_sync(conn, today, status="empty", when=utc_now_iso())
+    assert engine.auto_sync_tick() is None
+
+
+def test_clear_all_cancels_queued_batch_dates_and_clears_last_result(engine, conn, monkeypatch):
+    """3 天批次在 2 个 worker 均进入抓数后清空：已开始 2 天与待领取的第 3 天都不得落库，last_result 亦清空。"""
+    base = SyntheticProvider()
+    d1, d2, d3 = shift_iso(DAY, -2), shift_iso(DAY, -1), DAY
+    started_lock = threading.Lock()
+    started: list[str] = []
+    two_running = threading.Event()
+    release = threading.Event()
+
+    class BlockingThree(SyntheticProvider):
+        def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
+            with started_lock:
+                started.append(date)
+                if len(started) >= 2:
+                    two_running.set()
+            if date in (d1, d2):
+                release.wait(timeout=10)
+            return base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", BlockingThree())
+    engine.workers = 2
+
+    engine.start_background([d1, d2, d3])
+    assert two_running.wait(timeout=5)
+    engine.clear_all(conn)
+    release.set()
+
+    deadline = time.monotonic() + 10
+    while engine.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not engine.is_running()
+    assert storage.count_days(conn) == 0
+    assert storage.list_sync_runs(conn) == []
+    assert d3 not in started, "清空前排队的第 3 天不应在清空后被启动抓数"
+    assert engine.status()["last_result"] is None
+
+    # 清空后立即在旧批次未退出前重新提交同一个日期 d3：新代际的 d3 必须正常入库，旧代际的 d1/d2 仍被抛弃
+    started.clear()
+    two_running.clear()
+    release.clear()
+    monkeypatch.setitem(PROVIDERS, "synthetic", BlockingThree())
+    engine.start_background([d1, d2, d3])
+    assert two_running.wait(timeout=5)
+    engine.clear_all(conn)
+    resubmit = engine.start_background([d3])
+    assert resubmit["added"] == 1
+    release.set()
+
+    deadline = time.monotonic() + 10
+    while engine.is_running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert storage.available_dates(conn) == [d3]
+    assert engine.status()["last_result"] is not None
+
+    # 正常同步完成后再清空：status().last_result 也必须置空，不残留旧日步数与睡眠
+    engine.clear_all(conn)
+    assert storage.count_days(conn) == 0
+    assert engine.status()["last_result"] is None
+
+
+def test_negative_timezone_ecg_archived_on_local_day_only_not_empty_future_days(tmp_cfg, conn, monkeypatch):
+    """UTC-08:00 21:30（UTC 次日 05:30）的 ECG 应落到测量当天；请求只发 `>=` 符合 Google 契约，且不误建未来空日。"""
+    import json
+    import httpx
+    from health_by.engine import Engine
+    from health_by.providers.google_health.provider import GoogleHealthProvider
+
+    ecg_points = [
+        {
+            "electrocardiogram": {
+                "interval": {"startTime": "2026-03-02T05:30:00Z", "startUtcOffset": "-28800s"},  # 2026-03-01 21:30
+                "classification": "SINUS_RHYTHM",
+                "averageHeartRateBpm": 68,
+            }
+        },
+        {
+            "electrocardiogram": {
+                "interval": {"startTime": "2026-03-10T05:30:00Z", "startUtcOffset": "-28800s"},  # 2026-03-09 21:30（未来记录）
+                "classification": "ATRIAL_FIBRILLATION",
+                "averageHeartRateBpm": 110,
+            }
+        },
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "oauth2/v3/userinfo" in url:
+            return httpx.Response(200, json={"name": "T"})
+        if "dailyRollUp" in url:
+            # 仅给 2026-03-05 返回步数，证明有真实数据时仍保留 90 天内 ECG 历史
+            body = json.loads(request.content.decode())
+            end_d = body["range"]["end"]["date"]
+            end_iso = f"{end_d['year']:04d}-{end_d['month']:02d}-{end_d['day']:02d}"
+            if end_iso == "2026-03-05" and "/dataTypes/steps/" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "rollupDataPoints": [
+                            {
+                                "civilStartTime": {"date": {"year": 2026, "month": 3, "day": 5}},
+                                "steps": {"countSum": 5000},
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(200, json={"rollupDataPoints": []})
+        if "pairedDevices" in url:
+            return httpx.Response(200, json={"pairedDevices": []})
+        if "/dataTypes/electrocardiogram/" in url:
+            filt = request.url.params.get("filter", "")
+            # 严格遵循 Google 官方契约：ECG start_time 仅允许 >= 下界，出现 < 或 AND 视为 400 非法过滤
+            if "<" in filt or " AND " in filt or ">=" not in filt:
+                return httpx.Response(400, json={"error": {"message": "unsupported filter operator for electrocardiogram"}})
+            lo = filt.split('>= "')[1].split('"')[0]
+            pts = [p for p in ecg_points if p["electrocardiogram"]["interval"]["startTime"] >= lo]
+            return httpx.Response(200, json={"dataPoints": pts})
+        return httpx.Response(200, json={"dataPoints": []})
+
+    storage.set_setting(conn, "provider", "google-health")
+    gh_engine = Engine(tmp_cfg, conn)
+    gh_engine.save_credentials_for(
+        "google-health",
+        {"tokens": {"access_token": "tok", "expires_at": time.time() + 3600}},
+        conn,
+    )
+    gh_engine._http = httpx.Client(transport=httpx.MockTransport(handler))
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "google-health", GoogleHealthProvider(pace_ms=0))
+    try:
+        # 1. 测量当天（2026-03-01）必须命中并入库，且不得混入未来的 2026-03-09 记录
+        r_day = gh_engine.sync_days(["2026-03-01"])[0]
+        assert r_day["status"] == "ok"
+        saved_mar1 = storage.get_day(conn, "2026-03-01")
+        assert saved_mar1 is not None
+        assert len(saved_mar1["alerts"]["ecg_readings"]) == 1
+        assert saved_mar1["alerts"]["ecg_readings"][0]["start_time"] == "2026-03-01T21:30:00-08:00"
+
+        # 2. 后续空白日（3 月 2、3、8 日）不得因 90 天窗口里带出旧 ECG 或未来 ECG 而误判 ok 建档
+        empty_results = gh_engine.sync_days(["2026-03-02", "2026-03-03", "2026-03-08"])
+        assert [item["status"] for item in empty_results] == ["empty", "empty", "empty"]
+        assert storage.count_days(conn) == 1
+
+        # 3. 有真实步数的 3 月 5 日正常建档，并附带 90 天内的 3 月 1 日 ECG 历史（仍过滤掉 3 月 9 日未来记录）
+        r_mar5 = gh_engine.sync_days(["2026-03-05"])[0]
+        assert r_mar5["status"] == "ok"
+        saved_mar5 = storage.get_day(conn, "2026-03-05")
+        assert saved_mar5["activity"]["steps"] == 5000
+        assert len(saved_mar5["alerts"]["ecg_readings"]) == 1
+        assert saved_mar5["alerts"]["ecg_readings"][0]["start_time"] == "2026-03-01T21:30:00-08:00"
+    finally:
+        gh_engine.shutdown()
+        gh_engine.close()
+
+
+def test_auto_sync_tick_cancelled_when_cleared_after_scheduling_dates(engine, conn, monkeypatch):
+    """auto_sync_tick 排好回补日期后、执行抓数前若触发 clear_all，不得发起抓数或写入数据/notice。"""
+    storage.set_setting(conn, "sync_interval_minutes", 60)
+    today = iso_today()
+    scheduled = [shift_iso(today, -i) for i in range(4, -1, -1)]
+    fetched: list[str] = []
+
+    class SpySynthetic(SyntheticProvider):
+        def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
+            fetched.append(date)
+            return super().fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", SpySynthetic())
+
+    def fake_autosync_dates(target=None):
+        engine.clear_all(target or conn)
+        return scheduled, "backfill capped"
+
+    monkeypatch.setattr(engine, "_autosync_dates", fake_autosync_dates)
+    results = engine.auto_sync_tick(conn=conn)
+    assert all(item["status"] == "cancelled" for item in results)
+    assert fetched == []
+    assert storage.count_days(conn) == 0
+    assert storage.list_sync_runs(conn) == []
+    assert engine.status()["last_result"] is None
+
+
+def test_cross_process_clear_blocks_second_engine_writeback(tmp_cfg, conn, monkeypatch):
+    """独立连接（如 CLI `health-by sync`）同步途中，另一连接（如 Web `clear_all`）清空后不得写回或继续抓下一天。"""
+    from health_by import db as db_module
+    from health_by.engine import Engine
+
+    base = SyntheticProvider()
+    d1, d2 = shift_iso(DAY, -1), DAY
+    fetched: list[str] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingCLI(SyntheticProvider):
+        def fetch_raw(self, date, *, credentials=None, http=None, on_progress=None):
+            fetched.append(date)
+            if date == d1:
+                entered.set()
+                release.wait(timeout=10)
+            return base.fetch_raw(date, credentials=credentials, http=http, on_progress=on_progress)
+
+    ensure_builtin_providers()
+    monkeypatch.setitem(PROVIDERS, "synthetic", BlockingCLI())
+
+    engine_cli = Engine(tmp_cfg, conn)
+    conn_web = db_module.connect(tmp_cfg.db_path)
+    engine_web = Engine(tmp_cfg, conn_web)
+    outcome: dict[str, list[dict]] = {}
+    worker_err: list[BaseException] = []
+
+    def run_cli_sync():
+        try:
+            outcome["results"] = engine_cli.sync_days([d1, d2])
+        except BaseException as exc:  # noqa: BLE001
+            worker_err.append(exc)
+
+    thread = threading.Thread(target=run_cli_sync, daemon=True)
+    try:
+        thread.start()
+        assert entered.wait(timeout=5)
+        engine_web.clear_all(conn_web)
+        release.set()
+        thread.join(timeout=10)
+        assert not worker_err
+        assert [item["status"] for item in outcome["results"]] == ["cancelled", "cancelled"]
+        assert fetched == [d1]
+        assert storage.count_days(conn) == 0
+        assert storage.list_sync_runs(conn) == []
+    finally:
+        engine_cli.shutdown()
+        engine_cli.close()
+        engine_web.shutdown()
+        engine_web.close()
+        conn_web.close()
+
+
+def test_cross_process_clear_atomic_with_store_day_and_sync_run(tmp_cfg, conn, monkeypatch):
+    """最终代际校验、store_day 与 record_sync_run 同在一个 BEGIN IMMEDIATE 事务内，消除跨进程微窗口。"""
+    from health_by import db as db_module
+
+    ensure_builtin_providers()
+    engine_cli = Engine(tmp_cfg, conn)
+    conn_web = db_module.connect(tmp_cfg.db_path)
+    engine_web = Engine(tmp_cfg, conn_web)
+
+    real_store_day = storage.store_day
+    real_record_sync_run = storage.record_sync_run
+
+    def _assert_all_empty():
+        for table in ("days", "raw_days", "daily_metrics", "sync_runs"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+    try:
+        # 1. 在 get_clear_generation 校验之后、store_day 执行前暂停：跨进程 clear_all 必须等待事务提交，不能插队留下孤立日数据
+        entered_store = threading.Event()
+        release_store = threading.Event()
+        errors_1: list[BaseException] = []
+
+        def paused_store_day(*args, **kwargs):
+            entered_store.set()
+            assert release_store.wait(timeout=10)
+            return real_store_day(*args, **kwargs)
+
+        monkeypatch.setattr(storage, "store_day", paused_store_day)
+        t_cli_1 = threading.Thread(target=lambda: engine_cli.sync_days([DAY]), daemon=True)
+
+        def run_clear_1():
+            try:
+                engine_web.clear_all(conn_web)
+            except BaseException as exc:  # noqa: BLE001
+                errors_1.append(exc)
+
+        t_web_1 = threading.Thread(target=run_clear_1, daemon=True)
+        t_cli_1.start()
+        assert entered_store.wait(timeout=5)
+        t_web_1.start()
+        time.sleep(0.05)
+        assert t_web_1.is_alive(), "clear_all 应被 BEGIN IMMEDIATE 写锁阻塞直到同步写回事务完成"
+        release_store.set()
+        t_cli_1.join(timeout=10)
+        t_web_1.join(timeout=10)
+        assert not errors_1
+        assert not t_cli_1.is_alive() and not t_web_1.is_alive()
+        _assert_all_empty()
+
+        # 2. 在 store_day(..., commit=False) 之后、record_sync_run 前暂停：外部连接尚不可见，clear_all 不得插队并留下游离 sync_runs 行
+        monkeypatch.setattr(storage, "store_day", real_store_day)
+        entered_run = threading.Event()
+        release_run = threading.Event()
+        errors_2: list[BaseException] = []
+
+        def paused_record_sync_run(*args, **kwargs):
+            entered_run.set()
+            assert release_run.wait(timeout=10)
+            return real_record_sync_run(*args, **kwargs)
+
+        monkeypatch.setattr(storage, "record_sync_run", paused_record_sync_run)
+        t_cli_2 = threading.Thread(target=lambda: engine_cli.sync_days([DAY]), daemon=True)
+
+        def run_clear_2():
+            try:
+                engine_web.clear_all(conn_web)
+            except BaseException as exc:  # noqa: BLE001
+                errors_2.append(exc)
+
+        t_web_2 = threading.Thread(target=run_clear_2, daemon=True)
+        t_cli_2.start()
+        assert entered_run.wait(timeout=5)
+        assert storage.count_days(conn_web) == 0, "record_sync_run 之前事务尚未提交，外部连接不应读到半截落库结果"
+        t_web_2.start()
+        time.sleep(0.05)
+        assert t_web_2.is_alive(), "clear_all 应等待 store_day + record_sync_run 事务一并提交"
+        release_run.set()
+        t_cli_2.join(timeout=10)
+        t_web_2.join(timeout=10)
+        assert not errors_2
+        assert not t_cli_2.is_alive() and not t_web_2.is_alive()
+        _assert_all_empty()
+
+        # 3. 写回失败回滚原子性：record_sync_run 抛错时 store_day 一并回滚
+        def boom_record_sync_run(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(storage, "record_sync_run", boom_record_sync_run)
+        with pytest.raises(RuntimeError, match="boom"):
+            engine_cli.sync_day(DAY)
+        _assert_all_empty()
+        assert conn.execute("SELECT COUNT(*) FROM raw_measure_dates").fetchone()[0] == 0
+    finally:
+        engine_cli.shutdown()
+        engine_cli.close()
+        engine_web.shutdown()
+        engine_web.close()
+        conn_web.close()
