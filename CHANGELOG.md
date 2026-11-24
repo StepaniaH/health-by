@@ -4,6 +4,8 @@ User-visible changes, newest first. The format follows [Keep a Changelog](https:
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-11-24
+
 ### Added
 
 - **Deployment & governance**: added `SECURITY.md`, expanded `.dockerignore`, generated runtime constraint lockfile `requirements-lock.txt` (Dependabot-discoverable, shared across Docker and CI checks), added multi-arch `linux/amd64,linux/arm64` + SBOM/provenance CI publishing and `workflow_call` checks verification, and added non-medical self-check disclaimers in the UI and docs.

@@ -13,7 +13,7 @@ health score or diagnosis. AI analysis is optional.
 [![GitHub release](https://img.shields.io/github/v/tag/StepaniaH/health-by?label=version)](https://github.com/StepaniaH/health-by/tags)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> Status: `v0.0.3` — MVP plus a layered analysis dashboard. APIs and pages are still moving; feedback welcome.
+> Status: `v0.0.4` — MVP plus a layered analysis dashboard. APIs and pages are still moving; feedback welcome.
 
 ![Dashboard](docs/screenshots/dashboard-desktop.png)
 
