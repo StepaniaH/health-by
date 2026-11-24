@@ -1,21 +1,47 @@
 name: Checks
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_call:
 permissions:
   contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
-      - run: python -m pip install '.[dev]'
-      - run: python scripts/check_web_refs.py
+      - run: python -m pip install -c requirements-lock.txt '.[dev]'
+      - run: python scripts/check_web_refs.py -v
       - run: python scripts/check_i18n.py
-      - run: python -m pytest
+      - run: python scripts/check_i18n_js.py
+      - run: python -m pytest -ra
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build -t health-by:ci .
+      - run: docker run --rm health-by:ci health-by --version
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -c requirements-lock.txt '.[dev]' playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest -ra -m browser tests/test_browser_e2e.py

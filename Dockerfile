@@ -7,10 +7,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install the package (hatchling build; README is referenced by pyproject metadata)
-COPY pyproject.toml README.md ./
+# Install the package (hatchling build; README and LICENSE are referenced by pyproject metadata)
+COPY pyproject.toml README.md LICENSE requirements-lock.txt ./
 COPY health_by ./health_by
-RUN pip install .
+RUN pip install --constraint requirements-lock.txt .
 
 # Run as a non-root user; /data is the persistent volume mount point.
 # If the host UID is not 1000, override with `user: "UID:GID"` in compose or chown ./data.

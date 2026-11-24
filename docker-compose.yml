@@ -1,13 +1,13 @@
 # health-by — Docker Compose
 #
 # Start:  mkdir -p data && docker compose up -d
-# Open:   http://127.0.0.1:39441 — demo data is ready without credentials
+# Open:   http://127.0.0.1:39441 — starts empty until you connect Google Health in Settings
 # Connect real data: Settings → paste your own Google Cloud OAuth credentials → Connect
 #
 # Docs: docs/setup-google-health.md (real data), docs/data-coverage.md (API surface)
 services:
   health-by:
-    # Published image. To build from this checkout instead, replace both lines with:
+    # Published image. To build from this checkout instead, replace the image line with:
     #   build: .
     #   image: health-by:local
     image: stepaniah/health-by:latest

@@ -8,6 +8,11 @@ dev-data/
 *.db
 *.db-wal
 *.db-shm
+*.db.bak*
+*.db.pre-compress-*.bak
+health-by-export-*.json
+secret.key
+*.bundle
 .env
 .uv-cache/
 .uv-python/
