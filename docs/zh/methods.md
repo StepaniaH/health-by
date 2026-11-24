@@ -8,8 +8,10 @@
 > README 的「分析口径」表是速查版；这一页是可核对版。**两处不一致时以本页为准**，
 > 并且请把 README 也改过来。
 >
-> 所有常量都在代码里是具名常量（`health_by/insights.py`、`health_by/metrics.py` 顶部），
-> 本文引用的数值与代码一一对应。
+> 所有常量都在代码里是具名常量（`health_by/insights/`、`health_by/metrics.py` 顶部），
+> 本文引用的数值与代码一一对应。API 入口（`/api/v1/summary` 与 `/api/v1/insights`）读取
+> 前向历史缓冲（分别为 `BASELINE_WINDOW_DAYS + 8` 与 `window + BASELINE_WINDOW_DAYS + 7` 天），
+> 以供基线、可靠性与 7 日滚动带复用，同时保持返回给界面的图窗与请求窗口不变。
 
 ---
 
@@ -57,7 +59,7 @@ compose 文件数 35 还是 36，差在一个模板文件。
 
 **页面上一旦出现两个「基线」，用户看到的两句结论就会互相冒充**——一处说"比基线高 X"，
 另一处说"偏离基线"，却无法知道是不是同一个基线。所以窗口、中心量、最小样本数只在
-`metrics.baseline_stats()` 里定义一次，`insights.py` 与 `analysis.py` 都引用它。
+`metrics.baseline_stats()` 里定义一次，`insights/` 与 `analysis.py` 都引用它。
 
 | 参数 | 取值 | 说明 |
 |---|---|---|
@@ -109,6 +111,7 @@ compose 文件数 35 还是 36，差在一个模板文件。
 > 所以本项目的 UI 只给数值和方向说明，不给"规律/不规律"的分级。
 
 **已知局限：** 最少 7 对相邻日才发布，意味着约两周的数据才够。数据更少时该指标为 `null` 而非低分。
+`metrics.sleep_bins_by_date()` 与 `metrics.sri()` 也会剔除缺少相邻完整日上下文的跨午夜残段。
 
 ---
 
@@ -137,12 +140,11 @@ compose 文件数 35 还是 36，差在一个模板文件。
 | **出处** | 余弦节律分析（cosinor analysis）是昼夜节律研究的标准方法 |
 | **实现** | `metrics.cosinor()` |
 
-**两个实现要点：**
+**三个实现要点：**
 
-1. **用带截距的最小二乘拟合，不用等间隔简化公式。** 等间隔公式 `b = 2/n Σ y·cos` 假定
-   24 小时均匀采样；分时步数可能只有部分时段有观测。应按实际观测时刻构建设计矩阵，
-   使用最小二乘求解。
-2. **R² 的基准是样本均值 ȳ，不是拟合出的截距。** `Σ(y−c)²` 在 `c = ȳ` 处取最小，
+1. **先按日内小时聚合，再跨天取均值（`metrics.hourly_activity()`）。** 同一天同一个小时内的分时步数先求和再对有观测天数取平均，避免个别天采样点更密拉偏均值。
+2. **用带截距的最小二乘拟合，并按半小时箱中点对齐（`hour + 0.5`）。** 等间隔公式 `b = 2/n Σ y·cos` 假定 24 小时均匀采样；分时步数可能只有部分时段有观测。按实际观测时刻中点 `(hour + 0.5) / 24` 构建设计矩阵，使用最小二乘求解。
+3. **R² 的基准是样本均值 ȳ，不是拟合出的截距。** `Σ(y−c)²` 在 `c = ȳ` 处取最小，
    所以恒有 `R²(ȳ) ≤ R²(mesor)`——用截距当基准只会让 R² 偏高，**系统性地放宽门槛**。
    这个偏差只在缺测时出现（全时段等间隔时两者相等）。
 
@@ -194,14 +196,19 @@ compose 文件数 35 还是 36，差在一个模板文件。
 
 | | |
 |---|---|
-| **定义** | 皮尔逊相关系数 r，配 Fisher z 变换的 95% 置信区间 |
-| **参数** | 每对至少 10 个样本（`MIN_CORRELATION_SAMPLES=10`）；预定义 12 对指标；Bonferroni 校正 α = 0.05/12 ≈ 0.0042 |
-| **出处** | Fisher (1921) z 变换；Bonferroni 校正为多重比较的标准做法 |
-| **实现** | `insights._correlations()`、`metrics.fisher_ci()`、`metrics.correlation_is_significant()` |
+| **定义** | 皮尔逊相关系数 r，配基于 Bartlett AR(1) 有效样本量（`n_eff`）的 Fisher z 变换 95% 置信区间 |
+| **参数** | 每对按日历对齐至少 10 个样本（`MIN_CORRELATION_SAMPLES=10`）；预定义 12 对指标；Bonferroni 校正 α = 0.05/12 ≈ 0.0042 |
+| **出处** | Fisher (1921) z 变换；Bartlett (1935) 一阶自相关有效样本量校正；Bonferroni 多重比较校正 |
+| **实现** | `insights._correlations()`、`metrics.effective_sample_size()`、`metrics.fisher_ci()`、`metrics.correlation_is_significant()` |
 
 **读法（重要）：**
 
-- 报告里每个相关都带 `r`、`n`、`ci_low`、`ci_high`、`excludes_zero`、`survives_correction`。
+- 滞后配对（`offset_days = 1`）前后端均严格通过 `shift_iso(date, offset)` 按日历日期配对，不跨越缺测日相邻行错配。
+- 日度生理序列常带日间自相关。`metrics.effective_sample_size()` 计算连续日历配对的一阶自相关乘积 `rx * ry`，
+  在 `rx * ry > 0` 时上限截断至 `0.95` 并缩放到 `n_eff = n * (1 - rx * ry) / (1 + rx * ry)`，同时用于
+  `fisher_ci(r, n_eff)`、`correlation_is_significant(r, n_eff, α/12)` 以及 `_correlation_summary()` 的 `eta`
+  所需样本估计（按 `n / n_eff` 等比例折算）；响应同时保留原始配对数 `n` 与 `n_eff`。
+- 报告里每个相关都带 `r`、`n`、`n_eff`、`ci_low`、`ci_high`、`excludes_zero`、`survives_correction`。
 - **`strength` 只在 CI 不跨 0 **且**通过校正时才给"强/中/弱"。** 否则显示"不显著"。
   原因：`r = 0.6, n = 10` 看起来很强，但它 95% CI 约为 `[−0.05, 0.89]`，本来就跨 0。
 - **Bonferroni 的分母固定为 12（预定义检验总数），不用"实际算了几对"。** 因为样本不足的
@@ -294,9 +301,10 @@ compose 文件数 35 还是 36，差在一个模板文件。
 | `coverage.excluded_out_of_range` | 因越界被剔除的天数（按指标） | 分析层会静默剔除生理上不可能的值，不报就等于隐瞒 |
 | `coverage.sparse_days` | 字段数明显少于同窗口其他天 | 上游解析悄悄失败时，同步记录可能完全"成功" |
 
-**越界范围（`insights.BOUNDS`）：** 睡眠时长 0–960 分钟、睡眠效率 0–100%、
+**越界范围（统一由 `metrics.BOUNDS` 定义，`insights.BOUNDS` 同步导出）：** 睡眠时长 0–960 分钟、睡眠效率 0–100%、
 静息心率 25–220 bpm、HRV 5–250 ms、血氧 50–100%、呼吸率 4–40 次/分、
-体重 20–300 kg、体脂 1–70%。越界值**不参与任何计算**，只被计数并报告。
+体重 20–300 kg、体脂 1–70%。对静息心率、HRV、血氧、呼吸率，`metrics.in_bounds()` 也会将 `0` 视作缺测。
+越界值与无效零值**不参与任何计算**（包括 `field_appears()` 与 `calendar_averages()`），只被计数并报告。
 
 > **`sparse_days` 的已知盲区：** 只抓**单天离群**（某天塌了）。如果上游改字段名导致
 > **窗口内每天都少同一项**，中位数会跟着一起降，就没有离群点，检测静默——这类**均匀漂移**

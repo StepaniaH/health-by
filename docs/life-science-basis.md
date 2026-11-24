@@ -63,8 +63,12 @@ must not shrink the baseline. Skin temperature moving from missing to a sustaine
 a first appearance.
 
 `valid_from` is the later of the window start and the sustained first-appearance date; only valid
-readings from that date onward enter the baseline. `field_appearance` reports the first-appearance
-date separately, and statistical candidates and appearance evidence never substitute for each other.
+readings pre-filtered through `metrics.in_bounds()` (which drops out-of-bounds values using
+`metrics.BOUNDS` and treats exact `0` as missing for resting HR, HRV, breathing rate, and SpO2)
+from that date onward enter the baseline, and full history before `field_appears()` is filtered under
+the same `in_bounds()` rule so an out-of-range spike cannot create a false appearance boundary.
+`field_appearance` reports the first-appearance date separately, and statistical candidates and
+appearance evidence never substitute for each other.
 With fewer than 7 valid samples the baseline is empty, and `insufficient_reason` states why; data from
 before the first appearance is never mixed back in. The interface shows the post-appearance start and
 valid day count, not statistical break candidates. These are coverage boundaries of that field; they
@@ -91,25 +95,31 @@ qualifying weeks, returns null; identical weekly means with within-week variatio
 Reproducible expected values for the synthetic vectors are 0.99715099715, 937/6702, and 0 — see the
 unit tests.
 
-`analysis.reliability_basis` echoes the window, minimum weeks, threshold, method, and definition, and
+`analysis.reliability_basis` echoes the window, minimum weeks, threshold, `rolling_min_samples`
+(`MIN_ROLLING_SAMPLES = 2`), `within_sd`, `stable_within_sd`, method, and definition, and
 reports `weeks` and `mean_days_per_week` per metric: metrics go missing on different days, so they
 cannot share one sample size. The ratio is affected by how many observations each week holds and how
 weeks are grouped; 0.4 is a display threshold for this product, not a calibrated boundary of health or
 data quality.
 
 `analysis.reliability / display_mode / display_values / insufficient` use exactly the same seven
-metric keys as `comparisons`. When a state metric's ratio is below 0.4 the display defaults to a
-right-aligned 7-day average; when data is insufficient or the ratio cannot be computed, the daily
-value is kept and `insufficient: true` is echoed. Behaviour metrics always display daily values;
-steps, one of the seven, gets no rolling display value even when its ratio is low.
+metric keys as `comparisons`. When a state metric's ratio is below 0.4 — unless its pooled weekly
+within-week SD is already within the `STABLE_WITHIN_SD` noise floor (`resting_hr: 1.5`,
+`hrv_ms: 2.0`, `sleep_minutes: 20.0`, `breathing_rate: 0.5`, `spo2: 0.5`, `skin_temp_delta: 0.15`),
+in which case daily display is retained because weekly variation is already small — the display
+defaults to a right-aligned 7-day average; when data is insufficient or the ratio cannot be computed,
+the daily value is kept and `insufficient: true` is echoed. Behaviour metrics always display daily
+values; steps, one of the seven, gets no rolling display value even when its ratio is low.
 
-The 7-day average uses the observations available in the last 7 **calendar days**, not the last 7
-records; it is empty only when the whole window is missing. The `rolling` series prefix uses the days
-available at that point. The backend computes and rounds `display_values` to each metric's precision;
-the page only presents them with a "7-day average" label and never recomputes. Raw daily snapshots,
-single-night sleep detail, and intraday heart-rate curves keep the day's own readings; rolling cards
-carry no same-day baseline-difference copy. A fully missing rolling window shows "no data in the last
-7 days" rather than a zero.
+The 7-day average uses the valid (`in_bounds()`) observations available in the last 7 **calendar days**,
+not the last 7 records, requiring at least `MIN_ROLLING_SAMPLES = 2` observations in the window (1
+observation returns `null` rather than presenting a single day as a 7-day mean). The `rolling` series
+prefix uses the days available at that point with the same `min_samples` threshold. The backend
+computes and rounds `display_values` to each metric's precision; the page only presents them with a
+"7-day average" label and never recomputes. Raw daily snapshots, single-night sleep detail, and
+intraday heart-rate curves keep the day's own readings; rolling cards carry no same-day
+baseline-difference copy. A missing rolling window shows "no data in the last 7 days" rather than a
+zero.
 
 `comparisons.<metric>.current` equals `display_values.<metric>`; `current_daily` keeps the raw daily
 value separately. `difference` and `percent_change` are computed from the former against the
@@ -204,6 +214,7 @@ added.
 
 ### Window analysis stays at window-level aggregation
 
-The dual-basis change applies to single-day analysis only. `window-v1` continues to send range
-aggregates, adding no daily readings or arrays and so not widening the data egress; its field
-structure and prompt protocol stay at their original version.
+The dual-basis change (`v4-input-3`) applies to single-day analysis only. Multi-day ranges use a
+dedicated `WINDOW_SYSTEM_PROMPT` and schema (`v4-window-2`, validated under `rules v3`, with
+half-split median `trend.direction` when `len >= 3`), continuing to send range aggregates only and
+adding no daily readings or arrays so data egress does not widen.

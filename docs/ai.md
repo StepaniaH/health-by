@@ -2,9 +2,11 @@
 
 [Chinese](zh/ai.md)
 
+> **Non-Medical Disclaimer:** AI-generated summaries are for personal data self-check only. They are not medical advice, clinical diagnosis, or prescription guidance.
+
 Off by default. In Settings under **AI analysis**, enter a Base URL (including `/v1`), a model name,
-and an API key, then enable and save. Enabling shows which service and model will be used, and what a
-failed repair will send. Any OpenAI Chat Completions compatible endpoint works; for a local Ollama
+and an API key, then enable and save. Enabling shows which service, model, and aggregated summary scope
+will be used (automatic repair retries after failed validation also resend the previous reply; see the validation section below). Any OpenAI Chat Completions compatible endpoint works; for a local Ollama
 the typical values are `http://127.0.0.1:11434/v1` and `qwen2.5:3b`, and the key may be empty when
 the server requires no authentication. The service must support `/chat/completions`, non-streaming
 JSON output, and `response_format: json_object`. A Base URL that ends in `/chat/completions` has that
@@ -19,7 +21,7 @@ data does not recompute anything — regeneration is explicit.
 
 The AI block accepts a single day, the last 7 / 30 / 90 days, or a custom start and end date. Presets
 end on the date selected in the daily report; ranges are inclusive and cover at most 366 days. After
-changing dates, **Apply range** only reads existing analyses; only **Generate** sends a request. A
+changing dates, **Apply** only reads existing analyses; only **Generate** sends a request. A
 selected day with no archive does not prevent choosing a range that contains other archived days.
 
 The legacy request `{"date":"YYYY-MM-DD"}` is equivalent to a single day with `start == end`.
@@ -33,7 +35,7 @@ metadata, and correlations become an object indexed by metric pair. Multi-day re
 | `window` | `days` (calendar days), `days_with_archive`, `days_with_data` (any valid whitelisted measurement); `missing_days` and `max_missing_streak` count against the full calendar; `date_range` uses relative dates only |
 | `metrics` | grouped by the single-day whitelist; each entry carries `mean` / `median` / `min` / `max`, valid `coverage_days` / missing `missing_days` / longest gap `max_missing_streak` / excluded `excluded_days` |
 | extremes | one `min_day` / `max_day` per metric, relative dates only; ties take the earliest valid day; null when missing; no ranking |
-| `trend` | `direction` / `first` / `last` only, comparing the earliest and latest valid observations in the window — not the two calendar endpoints, and not a significance test; null direction with fewer than two observations |
+| `trend` | `direction` / `first` / `last` only; for ≥3 valid observations `direction` compares the first-half and second-half medians (with a 1% flat tolerance when ≥6), falling back to `first` vs `last` for 2 observations; not a significance test; null direction with fewer than two observations |
 | `goals` | for steps and sleep: `goal`, valid/missing days, `achieved_days`, `achievement_rate`; the denominator is days with valid measurements, missing days are not failures; null when there is no valid sample or no goal |
 | goal extremes | one `best_day` / `worst_day` plus its ratio per goal; ratios cap at 1, ties take the earliest day; these express goal completion only, not best or worst health |
 
@@ -48,9 +50,9 @@ never estimated from character counts.
 Migration v6 adds `start_date` / `end_date` to `ai_analyses`, backfilling old rows with their
 original `date` without rewriting content or usage. Cache and OpenCode sessions are keyed by start
 and end date, model, and service, so different windows ending on the same day never share results.
-The system prompt is v4; multi-day requests add input-field notes as `v4-window-1`. A new version
-never hits a v3 cache entry; old results stay, are read as they are, and are regenerated only on
-request.
+The system prompt is v4: single-day requests use `v4-input-3` and multi-day requests use the standalone
+system prompt `v4-window-2`. A new version never hits a v3 cache entry; old results stay, are read as
+they are, and are regenerated only on request.
 
 ## What is actually sent
 
@@ -286,7 +288,7 @@ every request; real consecutive generation is verified on the instance.
 ## Validation and the single repair
 
 Model output is a JSON object with `phenomenon`, `causes`, and `advice`; the JSON shape allows null
-causes and advice, but missing or blank causes receive at least a `warn` under rules v2. A JSON object encoded twice inside a string is decoded one extra
+causes and advice, but missing or blank causes receive at least a `warn` under rules v3 (also stripping one outer Markdown code fence, checking sign/direction and metric-unit bindings, banning medical diagnoses/prescriptions, and allowing neutral seek-care advice when `alerts.irregular_rhythm_alerts > 0`). A JSON object encoded twice inside a string is decoded one extra
 level only, never recursively.
 
 Validation checks the shape and whether every sentence **has something checkable** — a concrete
@@ -314,7 +316,7 @@ Prompt v4 requires at most three facts in the phenomena section, causes that sta
 specific missing data, advice that opens with an action, and Chinese metric names. Two or three
 numbers per sentence and 300 characters overall are writing goals, not new validation thresholds; the
 grading rules do not enforce those writing targets. The repair prompt also requires non-null causes;
-rules v2 mark missing causes with at least a warning without rewriting historical verdicts.
+rules v3 marks missing causes with at least a warning without rewriting historical verdicts.
 
 New results record `rules_version` and `validated_at` — the grading rules' version and the final
 verdict time. They are stored, cached, and exported with the result; old rows are neither backfilled
@@ -371,8 +373,8 @@ Protocol reference: [OpenAI Chat Completions](https://developers.openai.com/api/
 
 ## Single-day dual time basis and cache versions
 
-The single-day protocol is `daily-v2` with input-note revision `v4-input-2`; the window protocol
-remains `window-v1` with `v4-window-1`. Single-day measurement leaves are suffixed `*_today`; sleep
+The single-day protocol is `daily-v2` with input-note revision `v4-input-3`; the window protocol
+remains `window-v1` with standalone system prompt `v4-window-2`. Single-day measurement leaves are suffixed `*_today`; sleep
 duration, resting heart rate, HRV, breathing rate, blood oxygen, and skin temperature deviation also
 carry `*_7d`, computed and rounded by the same calendar-7-day path the pages use. Behaviour metrics
 get no 7-day value. `rolling_window_days=7` states the window; "today" means the selected day, and

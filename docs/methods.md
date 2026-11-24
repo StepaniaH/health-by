@@ -8,8 +8,10 @@ which publication it comes from, and when it should not be trusted.
 The README's analysis table is the short version. This page is the checkable one. Where the two
 disagree, this page wins.
 
-All constants are named in the code (`health_by/insights.py`, `health_by/metrics.py`); the values
+All constants are named in the code (`health_by/insights/`, `health_by/metrics.py`); the values
 quoted here map one-to-one onto them.
+
+Lookback buffering: API endpoints (`/api/v1/summary` and `/api/v1/insights`) load `BASELINE_WINDOW_DAYS + 8` / `window + BASELINE_WINDOW_DAYS + 7` days of prior history when evaluating personal baselines, reliability, and 7-day rolling bands without altering the shorter chart/request windows returned to the interface.
 
 ---
 
@@ -55,7 +57,7 @@ will take the debt as complete.
 
 Two different "baselines" on one screen make two conclusions impersonate each other. Window, centre,
 and minimum sample size are therefore defined once, in `metrics.baseline_stats()`, and both
-`insights.py` and `analysis.py` reference it.
+`insights/` and `analysis.py` reference it.
 
 | Parameter | Value | Notes |
 |---|---|---|
@@ -109,7 +111,7 @@ worn (watch versus band) and does not compare across devices.
 > grade.
 
 **Known limitation:** 7 adjacent pairs means roughly two weeks of data. With less data the metric is
-`null`, not a low score.
+`null`, not a low score. `metrics.sleep_bins_by_date()` and `metrics.sri()` also exclude isolated midnight-split boundary fragments that lack full adjacent day context.
 
 ---
 
@@ -138,12 +140,11 @@ jetlag" — an order-of-magnitude note from the literature, not a hard threshold
 | Source | cosinor analysis is the standard method in circadian research |
 | Implementation | `metrics.cosinor()` |
 
-**Two implementation points:**
+**Three implementation points:**
 
-1. **Fit by least squares with an intercept, not the equal-interval shortcut.** The shortcut
-   `b = 2/n Σ y·cos` assumes uniform sampling across 24 hours. Intraday steps may cover only some
-   hours; the design matrix uses the actual observed times and is solved by least squares.
-2. **`r2` uses the sample mean as its reference, not the fitted intercept.** `Σ(y−c)²` is minimised
+1. **Daily hour averaging before population mean (`metrics.hourly_activity()`).** Intraday steps within the same day-hour are summed first and then averaged per day observed at that hour, preventing dense sampling on one day from biasing multi-day averages.
+2. **Half-hour bin centering + intercept least squares.** Observed hourly bins are evaluated at bin center `(hour + 0.5) / 24` in the design matrix `[1, cos, sin]`, rather than the equal-interval shortcut `b = 2/n Σ y·cos` or hour-start `hour / 24`.
+3. **`r2` uses the sample mean as its reference, not the fitted intercept.** `Σ(y−c)²` is minimised
    at `c = ȳ`, so `r2(ȳ) ≤ r2(mesor)` always: using the intercept as reference inflates `r2` and
    systematically loosens the threshold. The two agree only when every hour is observed.
 
@@ -198,14 +199,21 @@ convention, not a precise metabolic equivalent.
 
 | | |
 |---|---|
-| Definition | Pearson r with a Fisher z 95% confidence interval |
-| Parameters | at least 10 samples per pair (`MIN_CORRELATION_SAMPLES=10`); 12 predefined pairs; Bonferroni α = 0.05/12 ≈ 0.0042 |
-| Source | Fisher (1921) z transform; Bonferroni for multiple comparisons |
-| Implementation | `insights._correlations()`, `metrics.fisher_ci()`, `metrics.correlation_is_significant()` |
+| Definition | Pearson r with a Fisher z 95% confidence interval using Bartlett AR(1) effective sample size (`n_eff`) |
+| Parameters | at least 10 calendar-aligned samples per pair (`MIN_CORRELATION_SAMPLES=10`); 12 predefined pairs; Bonferroni α = 0.05/12 ≈ 0.0042 |
+| Source | Fisher (1921) z transform; Bartlett (1935) / Quenouille effective sample size under lag-1 autocorrelation; Bonferroni for multiple comparisons |
+| Implementation | `insights._correlations()`, `metrics.effective_sample_size()`, `metrics.fisher_ci()`, `metrics.correlation_is_significant()` |
 
 **How to read it:**
 
-- Every reported correlation carries `r`, `n`, `ci_low`, `ci_high`, `excludes_zero`,
+- Lagged pairs (`offset_days = 1`) are paired strictly by calendar date via `shift_iso(date, offset)` on
+  both backend and frontend scatter plots, never across missing-day row gaps.
+- Daily physiological series are often autocorrelated. `metrics.effective_sample_size()` computes the
+  lag-1 autocorrelation product `rx * ry` across consecutive calendar pairs; when `rx * ry > 0`, it
+  clamps at `0.95` and scales `n_eff = n * (1 - rx * ry) / (1 + rx * ry)`. Both `fisher_ci(r, n_eff)`
+  and `correlation_is_significant(r, n_eff, α/12)` (plus `_correlation_summary()` ETA scaling by `n / n_eff`)
+  use `n_eff`, while reporting the raw paired count `n` alongside `n_eff`.
+- Every reported correlation carries `r`, `n`, `n_eff`, `ci_low`, `ci_high`, `excludes_zero`,
   `survives_correction`.
 - A **strength word is published only when the CI excludes zero *and* the pair survives correction.**
   In the examples below, "not significant" means the pair fails the reporting criteria; it does
@@ -312,10 +320,11 @@ be visible.
 | `coverage.excluded_out_of_range` | days dropped as out of range (per metric) | exclusion is silent otherwise, which is indistinguishable from not happening |
 | `coverage.sparse_days` | days with notably fewer fields than others in the window | upstream parsing can fail while the sync log reports success |
 
-**Valid ranges (`insights.BOUNDS`):** sleep duration 0–960 min, sleep efficiency 0–100%,
+**Valid ranges (`metrics.BOUNDS`, re-exported as `insights.BOUNDS`):** sleep duration 0–960 min, sleep efficiency 0–100%,
 resting heart rate 25–220 bpm, HRV 5–250 ms, blood oxygen 50–100%, breathing rate 4–40 /min,
-weight 20–300 kg, body fat 1–70%. Out-of-range values enter **no calculation**; they are counted and
-reported.
+weight 20–300 kg, body fat 1–70%. `metrics.in_bounds()` also treats exact `0` as missing for
+`resting_hr`, `hrv_ms`, `spo2`, and `breathing_rate`. Out-of-range values enter **no calculation**
+(including `field_appears()` and `calendar_averages()`); they are counted and reported.
 
 > **Known blind spot of `sparse_days`:** it catches **single-day** outliers only. If an upstream
 > rename removes the same field every day, the median moves with it and no day looks sparse. That

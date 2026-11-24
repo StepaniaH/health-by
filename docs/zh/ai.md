@@ -2,8 +2,10 @@
 
 [English](../ai.md)
 
+> **非医疗免责声明**：AI 生成的解读仅用于个人健康数据自查参考，不构成医疗诊断、治疗建议或用药处方。
+
 默认关闭。设置页的「AI 解读」填写 Base URL（含 `/v1`）、模型名称和 API key，再勾选启用并保存。
-勾选时会显示目的服务与模型，以及失败修复会发送的内容。支持 OpenAI Chat Completions 兼容协议；
+勾选时会显示目的服务、模型及发送的聚合摘要范围（校验失败时自动修复重试会附带上一轮模型回复，详见下文校验说明）。支持 OpenAI Chat Completions 兼容协议；
 本地 Ollama 示例为 `http://127.0.0.1:11434/v1`、`qwen2.5:3b`，本地未要求认证时 key 可留空。
 服务需支持 `/chat/completions`、非流式 JSON 输出及 `response_format: json_object`。
 Base URL 末尾误带 `/chat/completions` 时会自动去掉，避免重复拼接；不会自动猜测或补上 `/v1`。
@@ -15,7 +17,7 @@ Base URL 末尾误带 `/chat/completions` 时会自动去掉，避免重复拼�
 ## 时间窗口
 
 AI 区块可选单日、近 7 / 30 / 90 天或自定义开始与结束日期。预设以日报所选日期为结束，
-区间包含首尾，单次最多 366 天。改日期后点「应用区间」只读取已有解读；
+区间包含首尾，单次最多 366 天。改日期后点「应用」只读取已有解读；
 只有点「生成解读」才向模型发送请求。日报所选单日没有存档时，仍可选择包含其它存档的区间。
 
 旧请求 `{"date":"YYYY-MM-DD"}` 等价于单日 `start == end`。多日发送**在本机算好的窗口聚合**，
@@ -27,7 +29,7 @@ AI 区块可选单日、近 7 / 30 / 90 天或自定义开始与结束日期。�
 | `window` | `days` 日历天数、`days_with_archive` 存档天数、`days_with_data` 有任一有效白名单测量的天数；`missing_days` 与 `max_missing_streak` 按完整日历算，`date_range` 只有相对日期 |
 | `metrics` | 按单日白名单的分组/字段组织；每项 `mean` / `median` / `min` / `max`、有效 `coverage_days` / 缺测 `missing_days` / 最长连续缺测 `max_missing_streak` / 越界剔除 `excluded_days` |
 | 极值日 | 各项只有一个 `min_day` / `max_day`，均为相对日期；同值取最早有效日，缺测时为 null，不提供排名 |
-| `trend` | 只有 `direction` / `first` / `last`，比较窗口内最早和最晚有效观测；不是两个日历端点，也不是趋势显著性。少于两条时方向为 null |
+| `trend` | 只有 `direction` / `first` / `last`；有效样本 ≥3 天时比较前半段与后半段中位数（≥6 天含 1% 持平阈值），仅 2 天时退回首末有效观测比较；不是趋势显著性，少于两条时方向为 null |
 | `goals` | 步数与睡眠目标的 `goal`、有效/缺测天数、`achieved_days` 与 `achievement_rate`；分母为有效测量天数，缺测不当失败；无有效样本或无有效目标时达成率为 null |
 | 目标极值 | 各目标仅一个 `best_day` / `worst_day` 及对应比例；比例封顶为 1，同值取最早日；它只表示既定目标完成度，不表示健康最好或最差 |
 
@@ -38,7 +40,7 @@ AI 区块可选单日、近 7 / 30 / 90 天或自定义开始与结束日期。�
 
 迁移 v6 给 `ai_analyses` 增加 `start_date` / `end_date`，旧记录均回填原 `date`，内容和用量不改写。
 缓存及 OpenCode 会话按起止日期、模型与服务区分，同一个结束日的不同窗口互不复用。
-System Prompt 使用 v4；多日窗口另在用户输入增加字段口径说明，标为 `v4-window-1`。
+System Prompt 使用 v4；单日为 `v4-input-3`，多日窗口使用独立系统提示词 `v4-window-2`。
 新版本不会命中 v3 的缓存；旧记录继续保留，读取不改判，重新生成需用户手动触发。
 
 ## 实际发送什么
@@ -248,7 +250,7 @@ max_tokens=256  → 200 · finish=stop   · content "OK"
 
 ## 校验与一次修复
 
-模型输出为 `phenomenon`、`causes`、`advice` 三字段 JSON。JSON 形状允许 null；rules v2 对缺失或空白原因段至少标为 `warn`。
+模型输出为 `phenomenon`、`causes`、`advice` 三字段 JSON。JSON 形状允许 null；rules v3 对缺失或空白原因段至少标为 `warn`，并支持剥离单层 Markdown 代码围栏、校验正负符号与单位归属、禁止医学诊断/用药处方，同时在 `alerts.irregular_rhythm_alerts > 0` 时允许中性就医提醒。
 字符串里重复编码的 JSON 对象只额外解析一层，不无限递归。
 校验检查形状，以及每句是否**有可核对的出处**——具体数字，或输入里真实存在的键名
 （「今天 hrv_ms 与 resting_hr 均为 null」这类句子依据的是键名，不是数值，算合格），
@@ -268,7 +270,7 @@ max_tokens=256  → 200 · finish=stop   · content "OK"
 
 提示词 v4 要求现象最多三个事实、原因说明依据或具体缺失的数据、建议以动作开头，并使用中文指标名。
 每句两三个数字及全文不超过 300 字是写作目标，不是新增校验门槛。
-修复提示要求原因不可为 null；rules v2 对缺失原因段至少标为警告，历史判定不改写。
+修复提示要求原因不可为 null；rules v3 对缺失原因段至少标为警告，历史判定不改写。
 新结果的校验记录另存 `rules_version` 与 `validated_at`，分别表示校验判据版本和最终判定时间；
 它们随结果保存、缓存与导出，旧记录不回填、不重算。校验判据版本独立于提示词版本。
 新提示词只用于手动生成；旧版结果保留在数据库与导出中，不自动改写或重新调用模型。
@@ -309,8 +311,8 @@ max_tokens=256  → 200 · finish=stop   · content "OK"
 
 ## 单日双口径输入与缓存版本
 
-单日协议为 daily-v2，提示词输入说明版本为 v4-input-2；区间协议仍为 window-v1，
-提示词仍为 v4-window-1。单日 day 中的测量叶子名带 *_today；
+单日协议为 daily-v2，提示词输入说明版本为 v4-input-3；区间协议仍为 window-v1，
+多日系统提示词版本为 v4-window-2。单日 day 中的测量叶子名带 *_today；
 睡眠总时长、静息心率、HRV、呼吸率、血氧与皮温差同时提供 *_7d。
 它们复用页面后端的日历 7 日计算与舍入，行为指标不计算 7 日值。
 rolling_window_days=7 明示窗口；当日指所选日，分析历史日期时不改取服务器今天。

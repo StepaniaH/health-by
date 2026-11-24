@@ -44,8 +44,8 @@ Check: the Audience page shows Testing with one test user.
 
 ### S3 · Data access scopes
 
-Under **Data Access**, select the **9 read-only** Google Health API scopes (nothing `*.writeonly`;
-`reproductive_health`, `logged_symptoms`, and `mindfulness` are unrelated to this project):
+Under **Data Access**, select the **8 read-only** Google Health API scopes (nothing `*.writeonly`;
+`reproductive_health`, `logged_symptoms`, `location`, and `mindfulness` are unused by this project):
 
 ```
 https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly
@@ -53,17 +53,16 @@ https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.rea
 https://www.googleapis.com/auth/googlehealth.sleep.readonly
 https://www.googleapis.com/auth/googlehealth.ecg.readonly
 https://www.googleapis.com/auth/googlehealth.irn.readonly
-https://www.googleapis.com/auth/googlehealth.location.readonly
 https://www.googleapis.com/auth/googlehealth.nutrition.readonly
 https://www.googleapis.com/auth/googlehealth.profile.readonly
 https://www.googleapis.com/auth/googlehealth.settings.readonly
 ```
 
-The code's `SCOPES` has 11 entries: the 9 health read-only scopes above plus `openid` and `profile`
+The code's `SCOPES` has 10 entries: the 8 health read-only scopes above plus `openid` and `profile`
 (non-sensitive OIDC scopes granted automatically at runtime; they are **not** registered on the
 consent screen).
 
-Check: the Data Access page lists 9 scopes (`settings.readonly` counts as sensitive, the other eight as
+Check: the Data Access page lists 8 scopes (`settings.readonly` counts as sensitive, the other seven as
 restricted; the classification does not affect functionality). Click **Save**.
 
 ### S4 · Create the OAuth client
@@ -106,17 +105,13 @@ Check:
 
 - [ ] The dashboard shows real steps / sleep / heart rate that match the Fitbit app (a delay of up to
       one day is expected);
-- [ ] Coverage is as close to 31/31 as possible; an ungranted scope drops items — record which;
+- [ ] Coverage is as close to 30/30 as possible; an ungranted scope drops items — record which;
 - [ ] No 401/403. A 403 means revisiting S3 scopes; a 401 means revisiting the connection and token.
 
-### S7 · Record and finish
+### S7 · Operational follow-ups
 
-- [ ] Write what the real data looked like into [data-coverage.md](data-coverage.md) (which endpoints returned
-      data, which were empty, field differences);
-- [ ] Tick the onboarding checklist at the end of this file;
-- [ ] Watch the 7-day token expiry: Settings should prompt to reconnect; one click is enough;
-- [ ] For a public release, add the `LICENSE` file and fill the author and license fields in
-  `pyproject.toml`.
+- [ ] Note in your own deployment records which endpoints return data for your device and region (for example, ECG or nutrition may legitimately be absent);
+- [ ] Watch the 7-day testing-mode token expiry: Settings prompts to reconnect when expired; one click restores syncing without re-entering credentials.
 
 ## Appendix · Data channel options
 

@@ -5,15 +5,15 @@
 Sources: cross-checked against the OpenFit source review, Google's documentation, and this project's
 implementation. Each item below has a matching comment in the code.
 
-## Read tasks (31)
+## Read tasks (30)
 
 | Category | Tasks | Endpoint | Window |
 |---|---|---|---|
 | Metadata | identity / profile / settings / pairedDevices / irnProfile / userinfo | GET `/users/me/*`, `oauth2/v3/userinfo` | — |
 | Daily rollup ×12 | steps / total calories / distance / floors / active minutes / active zone minutes / sedentary / weight / body fat / water / nutrition / core temperature | POST `dataPoints:dailyRollUp` (civil range, `windowSizeDays=1`) | 14 days |
 | Daily records ×6 | resting heart rate / HRV / blood oxygen / breathing rate / sleep skin temperature / VO₂max | GET `dataPoints:reconcile` | 14 days |
-| Sessions | sleep (`google-wearables`) / exercise | GET `dataPoints:reconcile` | 14 days |
-| Standalone | ECG (`list`) / irregular rhythm notifications (`list`) / blood glucose | GET `dataPoints` | 90 / 14 / 14 days |
+| Sessions | sleep (`all-sources`) / exercise | GET `dataPoints:reconcile` | 14 days |
+| Standalone | ECG (`list`, filtered `<= selected day`) / irregular rhythm notifications (`list`, filtered to selected day) | GET `dataPoints` | 90 / 14 days |
 | Intraday | intraday steps / intraday heart rate (`google-wearables`, `list`) | GET `dataPoints` | selected day |
 
 `reconcile` is the official reconciliation stream: it de-duplicates and merges across every source
@@ -57,8 +57,9 @@ implementation. Each item below has a matching comment in the code.
    `FITBIT/Fitbit Air`, `FITBIT/MobileTrack`, and `HEALTH_KIT`. Summing sources can double-count
    observations. Normalization selects one dominant source by precedence
    ("Fitbit platform device > other Fitbit platform > unnamed"); heart rate follows the same rule.
-3. **Minute aggregation of heart-rate samples** — samples are averaged into minutes on write,
-   while `hr_min`/`hr_max` retain the original extremes. Raw payloads are archived per day for
+3. **Minute aggregation of heart-rate samples** — `hr_intraday` averages samples per `HH:MM` minute bucket
+   on write (and `hr_avg` averages those minute buckets), while `hr_min`/`hr_max` retain the raw valid
+   sample extremes (`beats > 0`) from the dominant source. Raw payloads are archived per day for
    recomputation.
 
 **What one typical day looks like (synthetic data)**
@@ -68,7 +69,7 @@ implementation. Each item below has a matching comment in the code.
 | Steps / distance / calories | 9,120 steps / 6.7 km / 2,240 kcal |
 | Active minutes / sedentary / floors | 62 min / 540 min / 5 flights |
 | Sleep | 432 min (23:40–07:12, efficiency 95%, deep 76 / light 210 / REM 128 / awake 18) |
-| Resting HR / HR range | 58 bpm / 52–128 bpm (after minute aggregation) |
+| Resting HR / HR range | 58 bpm / 52–128 bpm (raw sample extremes) |
 | HRV / SpO₂ / breathing rate | 42.0 ms / 97.0% / 15.0 /min |
 | Exercise | walking 30 min (3,100 steps) |
 
@@ -89,7 +90,7 @@ account's first data return empty, and the engine writes nothing (`empty`).
 example an HRV of 0 when the device had no valid value). The analysis layer range-checks HRV
 (5–250 ms), resting heart rate (25–220 bpm), blood oxygen (50–100%), and sleep duration (0–16 h);
 out-of-range values enter no baseline or correlation computation, while the raw payload stays intact
-in `raw_days` and remains traceable. An extreme low that is a genuine measurement — a night far
+(zlib-compressed and merged per job key on same-source sync) in `raw_days` and remains traceable. An extreme low that is a genuine measurement — a night far
 shorter than usual — is kept and shown as measured, not discarded as an anomaly.
 
 ## Hard limits (product level)

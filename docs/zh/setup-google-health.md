@@ -35,7 +35,7 @@
 
 ### S3 · 数据访问范围（Scopes）
 
-在「数据访问 / Data Access」的 Google Health API 范围里勾选 **9 个只读 scope**（不选任何 `*.writeonly`；`reproductive_health` / `logged_symptoms` / `mindfulness` 与本项目无关，不选）：
+在「数据访问 / Data Access」的 Google Health API 范围里勾选 **8 个只读 scope**（不选任何 `*.writeonly`；`reproductive_health` / `logged_symptoms` / `location` / `mindfulness` 本项目未使用，不选）：
 
 ```
 https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly
@@ -43,15 +43,14 @@ https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.rea
 https://www.googleapis.com/auth/googlehealth.sleep.readonly
 https://www.googleapis.com/auth/googlehealth.ecg.readonly
 https://www.googleapis.com/auth/googlehealth.irn.readonly
-https://www.googleapis.com/auth/googlehealth.location.readonly
 https://www.googleapis.com/auth/googlehealth.nutrition.readonly
 https://www.googleapis.com/auth/googlehealth.profile.readonly
 https://www.googleapis.com/auth/googlehealth.settings.readonly
 ```
 
-说明：代码 `SCOPES` 共 11 项 = 上述 9 个健康只读 + `openid` + `profile`（OIDC 非敏感 scope，运行时自动授权，**不需要**登记到同意屏幕）。
+说明：代码 `SCOPES` 共 10 项 = 上述 8 个健康只读 + `openid` + `profile`（OIDC 非敏感 scope，运行时自动授权，**不需要**登记到同意屏幕）。
 
-验证：数据访问页显示 9 个范围（`settings.readonly` 归"敏感"，其余 8 个归"受限"，分级差异不影响功能）；改完必须点 **Save**。
+验证：数据访问页显示 8 个范围（`settings.readonly` 归"敏感"，其余 7 个归"受限"，分级差异不影响功能）；改完必须点 **Save**。
 
 ### S4 · 创建 OAuth 客户端
 
@@ -82,15 +81,13 @@ https://www.googleapis.com/auth/googlehealth.settings.readonly
 验证：
 
 - [ ] 看板出现真实步数 / 睡眠 / 心率（与 Fitbit App 对得上，允许 ≤1 天延迟）；
-- [ ] 覆盖率尽量接近 31/31（部分 scope 未授权会掉项，记录具体失败项）；
+- [ ] 覆盖率尽量接近 30/30（部分 scope 未授权会掉项，记录具体失败项）；
 - [ ] 无 401/403 报错。403 → 回查 S3 scope；401 → 回查连接与令牌。
 
-### S7 · 记录与收尾
+### S7 · 日常运维留意
 
-- [ ] 真实数据观察写入私有部署笔记（哪些端点有数据、哪些为空、字段差异）；
-- [ ] 勾选本文件末尾的接入检查清单；
-- [ ] 观察 7 天令牌过期行为（到期后设置页应提示「需要重新连接」，重连一次即可）；
-- [ ] 若对外发布：补 `LICENSE` 文件，并在 `pyproject.toml` 填好作者与许可字段。
+- [ ] 按自己的设备型号与账号地区记录哪些可选端点有数据（例如 ECG、饮食摄入为空属正常现象）；
+- [ ] 关注测试模式 7 天令牌过期提示：到期后设置页提示「需要重新连接」，点一次重新授权即可恢复，无需重新填写凭据。
 
 ## 附 · 数据通道选项对比
 
