@@ -10,7 +10,7 @@ User-visible changes, newest first. The format follows [Keep a Changelog](https:
 - **External key injection**: added `HEALTH_BY_SECRET_KEY` and `HEALTH_BY_SECRET_KEY_PATH` support with Fernet key validation and atomic `0600` key file creation.
 - **Offline maintenance & import CLIs**: added `health-by db compress-raw` (with automatic `sqlite3` backup, `--dry-run`, `--vacuum`, and `--batch-size`), `health-by retranslate` (offline snapshot/metric recomputation from `raw_days`), and `health-by import-fitbit` (`health_by/importers/fitbit_zip.py` for Fitbit / Google Takeout ZIP archives and folders with zip-slip/symlink/size guards).
 - **Dark mode**: added `auto` / `light` / `dark` theme tokens in CSS, CSP-safe `web/js/theme.js` (`localStorage` + `prefers-color-scheme`), and theme pickers on both dashboard and settings pages.
-- **End-to-end smoke suite & CI browser/Docker checks**: added HTTP + Node ES-module DOM smoke coverage (`tests/test_e2e_smoke.py`), real Chromium Playwright E2E smoke test (`tests/test_browser_e2e.py`), CI `docker-build` and `browser-e2e` jobs (`.github/workflows/checks.yml`), and weekly `.github/dependabot.yml` updates.
+- **End-to-end smoke suite & CI browser/Docker checks**: added HTTP + Node ES-module DOM smoke coverage (`tests/test_e2e_smoke.py`), real Chromium Playwright E2E smoke test (`tests/test_browser_e2e.py`), CI `docker-build` and `browser-e2e` jobs (`.github/workflows/checks.yml`), and security-only `.github/dependabot.yml` configuration.
 - **Documented single-user design boundaries**: recorded intentional single-user trade-offs and deferred enhancements in `SECURITY.md`, `docs/architecture.md`, and `docs/zh/architecture.md`.
 
 ### Security
